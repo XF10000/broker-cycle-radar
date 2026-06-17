@@ -1194,10 +1194,18 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
 
 
 def _render_signal_summary(top_inds):
-    """Show current signal status for all stocks."""
+    """Show current signal status for all stocks, sorted by Z score."""
+    # Build Z lookup
+    z_map = {}
+    if st.session_state.odds_df is not None and not st.session_state.odds_df.empty:
+        for _, r in st.session_state.odds_df.iterrows():
+            raw = r['ts_code'].split('.')[0]
+            z_map[raw] = r.get('median_z', -999)
+
     rows = []
     for code, df in st.session_state.stocks_daily.items():
         name = INDEX_CONSTITUENTS.get(code, code)
+        z_val = z_map.get(code, -999)
         df = df.copy()
         df['trade_date'] = pd.to_datetime(df['trade_date'])
         df = df.sort_values('trade_date')
@@ -1218,12 +1226,16 @@ def _render_signal_summary(top_inds):
                 last_date = df['trade_date'].iloc[np.where(recent_sig)[0][-1]] if np.where(recent_sig)[0].size > 0 else None
             rows.append({
                 '股票': name,
+                'Z评分': f"{z_val:+.2f}" if z_val > -999 else '—',
                 '指标': ind_name,
                 '最近信号': last_date.date() if last_date else '无',
+                '_z': z_val,
             })
     
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        df_rows = pd.DataFrame(rows)
+        df_rows = df_rows.sort_values('_z', ascending=False).drop(columns=['_z'])
+        st.dataframe(df_rows, use_container_width=True, hide_index=True)
     else:
         st.info("暂无信号数据")
 
