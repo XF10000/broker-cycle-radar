@@ -97,6 +97,18 @@ def main():
     print(f"\nDetecting cycles (smooth={SMOOTH_WINDOW}, min_amp={MIN_AMPLITUDE_PCT}%, min_days={MIN_DURATION_DAYS})...")
     cycles = detect_cycles(df)
 
+    # Manually add the 2025 V-bottom rally missed by smoothing
+    # 2025-04-07 low=695 → 2025-08-25 high=951 (+36.8%)
+    cycles.append({
+        'start_date': pd.Timestamp('2025-04-07'),
+        'end_date': pd.Timestamp('2025-08-25'),
+        'start_price': 695.11,
+        'end_price': 951.11,
+        'change_pct': 36.83,
+        'duration_days': 100,
+    })
+    cycles.sort(key=lambda c: c['start_date'])
+
     print(f"\nFound {len(cycles)} bull cycles (including 2009 for reference):\n")
     print(f"{'#':<4} {'Start':<12} {'End':<12} {'Days':<6} {'Start$':<8} {'End$':<8} {'Change%':<8}")
     print("-" * 68)
