@@ -425,8 +425,8 @@ def render_cycle_overview():
 
     if st.session_state.display_cycles is not None and not st.session_state.display_cycles.empty:
         colors = ['rgba(255,0,0,0.08)', 'rgba(0,100,255,0.08)']
-        for i, row in st.session_state.display_cycles.iterrows():
-            color = colors[i % 2]
+        for j, (_, row) in enumerate(st.session_state.display_cycles.iterrows()):
+            color = colors[j % 2]
             fig.add_vrect(
                 x0=pd.Timestamp(row['start_date']),
                 x1=pd.Timestamp(row['end_date']),
@@ -434,7 +434,7 @@ def render_cycle_overview():
                 opacity=0.4,
                 layer="below",
                 line_width=0,
-                annotation_text=f"行情{i+1}",
+                annotation_text=f"行情{j+1}",
                 annotation_position="top left",
             )
 
