@@ -474,17 +474,16 @@ def get_all_signal_rules():
 # Signal context filter
 # ============================================================
 
-def filter_signals(df, signal_series, ma_period=250, decline_pct=15, cooldown=15, state_window=5, ref_highs=None):
+def filter_signals(df, signal_series, ma_period=250, decline_pct=20, cooldown=15, state_window=5, ref_highs=None):
     """
     Post-filter signals with trend context and cooldown.
     Only keep signals when market is in correction/downtrend mode.
 
-    Context rule: decline > decline_pct from reference high, AND close < MA250.
-    Once context is met, a state_window of trading days keeps it alive (latching)
-    so signals that fire shortly after exiting correction are still accepted.
+    Context rule: decline > decline_pct (20%) from reference high, AND close < MA250.
+    Once context is met, a state_window of trading days (5) keeps it alive (latching)
 
     Args:
-        decline_pct: minimum decline percentage (default 15).
+        decline_pct: minimum decline percentage (default 20).
         state_window: trading days to keep context alive after last met (default 5).
         ref_highs: optional array of reference high prices (same length as df).
                    If None, uses rolling 250-day max.
@@ -505,25 +504,24 @@ def filter_signals(df, signal_series, ma_period=250, decline_pct=15, cooldown=15
         if not np.isnan(ma[i]) and not np.isnan(decline[i]):
             context_ok[i] = (close[i] < ma[i]) and (decline[i] > decline_pct)
 
-    # Latching: track last index where context was met
+    # Single pass: track last context date and filter signals by proximity
+    filtered = signal_series.copy()
     last_context_idx = -state_window - 1
+    last_signal_idx = -cooldown - 1
+    signal_set = set(np.where(signal_series.values)[0])
+
     for i in range(n):
         if context_ok[i]:
             last_context_idx = i
-
-    filtered = signal_series.copy()
-    last_signal_idx = -cooldown - 1
-    signal_indices = np.where(signal_series.values)[0]
-
-    for idx in signal_indices:
-        if idx >= n or np.isnan(ma[idx]):
-            filtered.iloc[idx] = False
-        elif idx - last_context_idx > state_window:
-            filtered.iloc[idx] = False
-        elif idx - last_signal_idx < cooldown:
-            filtered.iloc[idx] = False
-        else:
-            last_signal_idx = idx
+        if i in signal_set:
+            if i >= n or np.isnan(ma[i]):
+                filtered.iloc[i] = False
+            elif i - last_context_idx > state_window:
+                filtered.iloc[i] = False
+            elif i - last_signal_idx < cooldown:
+                filtered.iloc[i] = False
+            else:
+                last_signal_idx = i
 
     return filtered
 
