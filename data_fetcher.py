@@ -23,6 +23,79 @@ STOCKS = {
 
 INDEX_CODE = '399975.SZ'
 
+# Hardcoded constituent list (49 stocks) — fallback when tushare index APIs unavailable
+# Source: user-provided 399975.SZ index constituent list as of 2026-06
+INDEX_CONSTITUENTS = {
+    '600909': '华安证券', '600621': '华鑫股份', '600906': '财达证券',
+    '601375': '中原证券', '000783': '长江证券', '600999': '招商证券',
+    '600030': '中信证券', '601066': '中信建投', '601236': '红塔证券',
+    '601198': '东兴证券', '601456': '国联民生', '601211': '国泰海通',
+    '601099': '太平洋',  '002736': '国信证券', '002500': '山西证券',
+    '601995': '中金公司', '601108': '财通证券', '000728': '国元证券',
+    '000166': '申万宏源', '002926': '华西证券', '600369': '西南证券',
+    '601059': '信达证券', '000750': '国海证券', '601688': '华泰证券',
+    '600155': '华创云信', '601881': '中国银河', '601136': '首创证券',
+    '601990': '南京证券', '002673': '西部证券', '601788': '光大证券',
+    '000776': '广发证券', '002939': '长城证券', '300059': '东方财富',
+    '600958': '东方证券', '601878': '浙商证券', '002797': '第一创业',
+    '601377': '兴业证券', '000686': '东北证券', '601901': '方正证券',
+    '601555': '东吴证券', '600061': '国投资本', '601162': '天风证券',
+    '600109': '国金证券', '600918': '中泰证券', '601696': '中银证券',
+    '002945': '华林证券', '002670': '国盛证券', '000712': '锦龙股份',
+    '600095': '湘财股份',
+}
+
+
+def _ts_code(code):
+    """Convert raw code to tushare ts_code format."""
+    return f'{code}.SH' if code.startswith('6') else f'{code}.SZ'
+
+
+def fetch_index_constituents(force=False):
+    """
+    Fetch 399975.SZ current constituent stocks.
+    Tries tushare APIs first; falls back to hardcoded INDEX_CONSTITUENTS list.
+    Returns list of dicts with ts_code, name (float_mv/weight may be None).
+    Cached to data/index_constituents.csv
+    """
+    path = _cache_path('index_constituents')
+    if not force and _is_fresh(path, max_hours=24 * 30):
+        df = _read_csv(path)
+        return df.to_dict('records')
+
+    # Attempt tushare APIs
+    pro = _get_pro()
+    for api_name, api_call in [
+        ('index_weight', lambda: pro.index_weight(
+            index_code=INDEX_CODE, trade_date=datetime.now().strftime('%Y%m%d'),
+            fields='index_code,con_code,trade_date,weight')),
+        ('index_member', lambda: pro.index_member(
+            index_code=INDEX_CODE,
+            fields='index_code,con_code,con_name,in_date,out_date,is_new')),
+    ]:
+        try:
+            df = api_call()
+            if df is not None and not df.empty:
+                result = []
+                for _, row in df.iterrows():
+                    code = row.get('con_code', '')
+                    result.append({
+                        'ts_code': code,
+                        'name': row.get('con_name', INDEX_CONSTITUENTS.get(code.split('.')[0], '')),
+                        'float_mv': None,
+                        'weight': row.get('weight'),
+                    })
+                pd.DataFrame(result).to_csv(path, index=False)
+                return result
+        except Exception:
+            continue
+
+    # Fallback: hardcoded list
+    result = [{'ts_code': _ts_code(code), 'name': name, 'float_mv': None, 'weight': None}
+              for code, name in INDEX_CONSTITUENTS.items()]
+    pd.DataFrame(result).to_csv(path, index=False)
+    return result
+
 
 def _get_pro():
     with open(TOKEN_FILE) as f:
