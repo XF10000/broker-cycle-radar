@@ -95,6 +95,10 @@ def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
     cycles = [c for c in cycles_all if pd.Timestamp(c['start_date']) >= pd.Timestamp('2010-01-01')]
     total_cycles = len(cycles)
 
+    # Build cycle amplitude weights (weighted hit rate)
+    cycle_weights = np.array([c['change_pct'] / 100 for c in cycles])
+    total_weight = cycle_weights.sum()
+
     results = []
 
     for freq_key, df in [('日线', data_dfs.get('index_daily')),
@@ -150,9 +154,10 @@ def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
             hits = 0
             lates = 0
             days_list = []
-            hit_signal_count = 0  # raw count of signals in valid windows
+            hit_signal_count = 0
+            weighted_hits = 0
 
-            for cycle in cycles:
+            for i, cycle in enumerate(cycles):
                 start = pd.Timestamp(cycle['start_date'])
                 end = pd.Timestamp(cycle['end_date'])
                 window_start = start - pd.Timedelta(days=signal_window)
@@ -169,10 +174,12 @@ def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
                 if judgment['hit']:
                     hits += 1
                     days_list.append(judgment['days_before'])
+                    weighted_hits += cycle_weights[i]
                 elif judgment['late']:
                     lates += 1
 
             hit_rate = hits / total_cycles if total_cycles > 0 else 0
+            weighted_hr = weighted_hits / total_weight if total_weight > 0 else 0
             avg_days = np.mean(days_list) if days_list else None
             precision = hit_signal_count / total_signals if total_signals > 0 else 0
 
@@ -180,14 +187,14 @@ def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
             days_score = 0
             if avg_days is not None:
                 days_score = abs(avg_days - 5) / 30 * 0.3
-            score = hit_rate * 0.5 + precision * 0.2 - days_score
+            score = weighted_hr * 0.5 + precision * 0.2 - days_score
 
             results.append({
                 '指标名': rule['name'],
                 '类别': rule['category'],
                 '周期': freq_key,
                 '参数': str(rule['params']),
-                '命中率': round(hit_rate, 3),
+                '命中率': round(weighted_hr, 3),
                 '命中轮数': f'{hits}/{total_cycles}',
                 '平均提前天': round(avg_days, 1) if avg_days is not None else None,
                 '信号有效率': round(precision, 3),
@@ -229,6 +236,8 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
     cycles_all = cycle_df.to_dict('records')
     cycles = [c for c in cycles_all if pd.Timestamp(c['start_date']) >= pd.Timestamp('2010-01-01')]
     total_cycles = len(cycles)
+    cycle_weights = np.array([c['change_pct'] / 100 for c in cycles])
+    total_weight = cycle_weights.sum()
 
     weekly_top = standalone_results[standalone_results['周期'] == '周线'].head(3)
     daily_top = standalone_results[standalone_results['周期'] == '日线'].head(3)
@@ -304,8 +313,9 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
             lates = 0
             days_list = []
             hit_signal_count = 0
+            weighted_hits = 0
 
-            for cycle in cycles:
+            for i, cycle in enumerate(cycles):
                 start = pd.Timestamp(cycle['start_date'])
                 end = pd.Timestamp(cycle['end_date'])
                 window_start = start - pd.Timedelta(days=signal_window)
@@ -319,17 +329,19 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
                 if judgment['hit']:
                     hits += 1
                     days_list.append(judgment['days_before'])
+                    weighted_hits += cycle_weights[i]
                 elif judgment['late']:
                     lates += 1
 
             hit_rate = hits / total_cycles if total_cycles > 0 else 0
+            weighted_hr = weighted_hits / total_weight if total_weight > 0 else 0
             avg_days = np.mean(days_list) if days_list else None
 
             precision = hit_signal_count / total_signals if total_signals > 0 else 0
             days_score = 0
             if avg_days is not None:
                 days_score = abs(avg_days - 5) / 30 * 0.3
-            score = hit_rate * 0.5 + precision * 0.2 - days_score
+            score = weighted_hr * 0.5 + precision * 0.2 - days_score
 
             rule_name = f'周线:{w_name} + 日线:{d_name}'
             results.append({
@@ -337,7 +349,7 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
                 '类别': '共振',
                 '周期': '周+日',
                 '参数': f'w={w_params}, d={d_params}',
-                '命中率': round(hit_rate, 3),
+                '命中率': round(weighted_hr, 3),
                 '命中轮数': f'{hits}/{total_cycles}',
                 '平均提前天': round(avg_days, 1) if avg_days is not None else None,
                 '信号有效率': round(precision, 3),
@@ -375,6 +387,8 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
     cycles_all = cycle_df.to_dict('records')
     cycles = [c for c in cycles_all if pd.Timestamp(c['start_date']) >= pd.Timestamp('2010-01-01')]
     total_cycles = len(cycles)
+    cycle_weights = np.array([c['change_pct'] / 100 for c in cycles])
+    total_weight = cycle_weights.sum()
 
     df = stock_df.copy()
     df['trade_date'] = pd.to_datetime(df['trade_date'])
@@ -399,6 +413,7 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
         hits = 0
         days_list = []
         hit_count = 0
+        weighted_hits = 0
 
         for cycle in cycles:
             start = pd.Timestamp(cycle['start_date'])
@@ -414,20 +429,21 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
                 hits += 1
                 days_list.append(j['days_before'])
 
-        hit_rate = hits / total_cycles if total_cycles > 0 else 0
-        avg_days = np.mean(days_list) if days_list else None
+            hit_rate = hits / total_cycles if total_cycles > 0 else 0
+            weighted_hr = weighted_hits / total_weight if total_weight > 0 else 0
+            avg_days = np.mean(days_list) if days_list else None
         precision = hit_count / total_signals if total_signals > 0 else 0
         days_score = 0
         if avg_days is not None:
             days_score = abs(avg_days - 5) / 30 * 0.3
-        score = hit_rate * 0.4 + precision * 0.3 - days_score
+        score = weighted_hr * 0.5 + precision * 0.2 - days_score
 
         results.append({
             '股票': stock_code,
             '指标名': rule['name'],
             '类别': rule['category'],
             '周期': '日线',
-            '命中率': round(hit_rate, 3),
+            '命中率': round(weighted_hr, 3),
             '命中轮数': f'{hits}/{total_cycles}',
             '平均提前天': round(avg_days, 1) if avg_days is not None else None,
             '信号有效率': round(precision, 3),
