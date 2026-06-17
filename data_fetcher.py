@@ -60,7 +60,7 @@ def fetch_index_constituents(force=False):
     """
     path = _cache_path('index_constituents')
     if not force and _is_fresh(path, max_hours=24 * 30):
-        df = _read_csv(path)
+        df = pd.read_csv(path)
         return df.to_dict('records')
 
     # Attempt tushare APIs
