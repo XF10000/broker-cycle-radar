@@ -743,7 +743,6 @@ def _render_heatmap(results_df, cycles_df):
                 continue
 
             try:
-                from indicators import filter_signals
                 w_df = st.session_state.index_weekly.copy()
                 d_df = st.session_state.index_daily.copy()
                 w_df['trade_date'] = pd.to_datetime(w_df['trade_date'])
@@ -751,14 +750,29 @@ def _render_heatmap(results_df, cycles_df):
                 w_df = w_df.set_index('trade_date').sort_index()
                 d_df = d_df.set_index('trade_date').sort_index()
 
+                # Build ref_highs consistent with backtest
+                cycles_all = pd.read_csv(os.path.join(OUTPUT_DIR, 'cycles.csv'))
+                cycle_peaks = sorted([(pd.Timestamp(c['end_date']), c['end_price']) for _, c in cycles_all.iterrows()])
+                def _build_ref_highs(idx):
+                    ref = []
+                    for d in idx:
+                        rh = None
+                        for peak_date, peak_price in cycle_peaks:
+                            if peak_date <= d: rh = peak_price
+                            else: break
+                        ref.append(rh if rh is not None else 0)
+                    return ref
+                w_ref = _build_ref_highs(w_df.index)
+                d_ref = _build_ref_highs(d_df.index)
+
                 w_raw = w_cfg['func'](w_df.reset_index(), **w_cfg['params'][0])
                 w_raw.index = w_df.index
-                w_sig = filter_signals(w_df.reset_index(), w_raw)
+                w_sig = filter_signals(w_df.reset_index(), w_raw, ref_highs=w_ref)
                 w_sig.index = w_df.index
 
                 d_raw = d_cfg['func'](d_df.reset_index(), **d_cfg['params'][0])
                 d_raw.index = d_df.index
-                d_sig = filter_signals(d_df.reset_index(), d_raw)
+                d_sig = filter_signals(d_df.reset_index(), d_raw, ref_highs=d_ref)
                 d_sig.index = d_df.index
 
                 # Build resonance signal
@@ -773,7 +787,7 @@ def _render_heatmap(results_df, cycles_df):
                 for cycle in cycles:
                     start = pd.Timestamp(cycle['start_date'])
                     end = pd.Timestamp(cycle['end_date'])
-                    j = judge_signal(resonance_sig, start, end, signal_window=45)
+                    j = judge_signal(resonance_sig, start, end, signal_window=st.session_state.signal_window)
                     if j['hit']:
                         z_row.append(2 if j['days_before'] > 15 else 3)
                         t_row.append(f"共振命中 提前{j['days_before']}天")
@@ -815,10 +829,23 @@ def _render_heatmap(results_df, cycles_df):
             except Exception:
                 params = cfg['params'][0]
 
+            # Build ref_highs consistent with backtest engine
+            cycles_all = pd.read_csv(os.path.join(OUTPUT_DIR, 'cycles.csv'))
+            cycle_peaks = sorted([(pd.Timestamp(c['end_date']), c['end_price']) for _, c in cycles_all.iterrows()])
+            ref_highs = []
+            for d in df.index:
+                rh = None
+                for peak_date, peak_price in cycle_peaks:
+                    if peak_date <= d:
+                        rh = peak_price
+                    else:
+                        break
+                ref_highs.append(rh if rh is not None else df.loc[d, 'close'])
+
             try:
                 sig_raw = cfg['func'](df.reset_index(), **params)
                 sig_raw.index = df.index
-                sig = filter_signals(df.reset_index(), sig_raw)
+                sig = filter_signals(df.reset_index(), sig_raw, ref_highs=ref_highs)
                 sig.index = df.index
             except Exception:
                 for _ in cycles:
@@ -829,7 +856,7 @@ def _render_heatmap(results_df, cycles_df):
             for cycle in cycles:
                 start = pd.Timestamp(cycle['start_date'])
                 end = pd.Timestamp(cycle['end_date'])
-                j = judge_signal(sig, start, end, signal_window=45)
+                j = judge_signal(sig, start, end, signal_window=st.session_state.signal_window)
                 if j['hit']:
                     days = j['days_before']
                     z_row.append(3 if days <= 15 else 2)
