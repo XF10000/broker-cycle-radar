@@ -864,7 +864,7 @@ def render_live_tracking():
         st.markdown("""
         **主买入信号：CCI 脱离超卖**（蓝三角出现在 CCI 栏）
         - CCI 从 -100 以下回升 → 下跌动量衰减
-        - 必须出现在 **灰色跌15%线之下** → 市场处于超跌状态
+        - 必须出现在 **灰色跌20%线之下** → 市场处于超跌状态
         - 一个蓝三角 = 可以买入
         
         **确认信号：OBV 底背离**（蓝三角出现在 OBV 栏）
@@ -949,7 +949,7 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
     fig.add_trace(go.Scatter(x=seg['trade_date'], y=ma250_disp, name='年线(250)',
         line=dict(color='orange', width=1), connectgaps=False), row=1, col=1)
     if decline_disp is not None:
-        fig.add_trace(go.Scatter(x=seg['trade_date'], y=decline_disp, name='跌15%线',
+        fig.add_trace(go.Scatter(x=seg['trade_date'], y=decline_disp, name='跌20%线',
             line=dict(color='gray', width=1, dash='dash'), connectgaps=False), row=1, col=1)
 
     # Mark reference high as horizontal line

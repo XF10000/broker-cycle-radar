@@ -474,7 +474,7 @@ def get_all_signal_rules():
 # Signal context filter
 # ============================================================
 
-def filter_signals(df, signal_series, ma_period=250, decline_pct=15, cooldown=15, ref_highs=None):
+def filter_signals(df, signal_series, ma_period=250, decline_pct=20, cooldown=15, ref_highs=None):
     """
     Post-filter signals with trend context and cooldown.
     Only keep signals when market is in correction/downtrend mode.
