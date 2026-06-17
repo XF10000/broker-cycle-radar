@@ -476,7 +476,7 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
 
 def run_all_stocks_backtest(data_dfs, signal_window=45):
     """Run backtest for all stocks, save to CSV."""
-    from data_fetcher import STOCKS
+    from data_fetcher import INDEX_CONSTITUENTS
     import pandas as pd
 
     cycle_path = os.path.join(OUTPUT_DIR, 'cycles.csv')
@@ -486,7 +486,7 @@ def run_all_stocks_backtest(data_dfs, signal_window=45):
     for code, df in data_dfs.get('stocks_daily', {}).items():
         if df is None or df.empty:
             continue
-        name = STOCKS.get(code, code)
+        name = INDEX_CONSTITUENTS.get(code, code)
         r = run_stock_backtest(code, df, cycle_df, signal_window)
         r['股票名'] = name
         all_results.append(r)
