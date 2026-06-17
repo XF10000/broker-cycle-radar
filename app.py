@@ -50,6 +50,11 @@ def init_session():
         'signal_window': 30,
         'last_data_date': '',
         'data_error': '',
+        'odds_df': None,
+        'odds_meta': {},
+        'odds_signal_cache': None,
+        'odds_favorites': set(),
+        'odds_data_date': '',
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -124,6 +129,112 @@ def load_cycles():
         ]
         return True
     return False
+
+
+def load_odds():
+    """Load stock odds CSV into session state."""
+    path = os.path.join(OUTPUT_DIR, 'stock_odds.csv')
+    if not os.path.exists(path):
+        return False
+    meta = {}
+    lines = []
+    with open(path, 'r') as f:
+        for line in f:
+            if line.startswith('#'):
+                if 'M=' in line:
+                    parts = line.strip('# ').split(',')
+                    for p in parts:
+                        if '=' in p:
+                            k, v = p.split('=', 1)
+                            meta[k.strip()] = v.strip()
+            else:
+                lines.append(line)
+    import io
+    df = pd.read_csv(io.StringIO(''.join(lines)))
+    st.session_state.odds_df = df
+    st.session_state.odds_meta = meta
+    st.session_state.odds_data_date = meta.get('updated', '')
+    return True
+
+
+def compute_odds_signals():
+    """
+    Compute buy signals for all stocks in odds_df using top 3 indicators.
+    Returns DataFrame with ts_code + signal columns.
+    Cached to output/signal_cache.csv.
+    """
+    from indicators import INDICATOR_REGISTRY, filter_signals
+
+    cache_path = os.path.join(OUTPUT_DIR, 'signal_cache.csv')
+    last_date = st.session_state.get('last_data_date', '')
+
+    if os.path.exists(cache_path) and last_date:
+        with open(cache_path, 'r') as f:
+            first = f.readline()
+        if last_date in first:
+            try:
+                cached = pd.read_csv(cache_path)
+                if not cached.empty:
+                    st.session_state.odds_signal_cache = cached
+                    return cached
+            except Exception:
+                pass
+
+    df = st.session_state.odds_df
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    top_inds = [
+        ('OBV底背离', {'lookback': 90}),
+        ('CCI脱离超卖', {'period': 20}),
+        ('MACD柱线缩短', {'fast': 12, 'slow': 26, 'signal': 9, 'consecutive': 3}),
+    ]
+
+    records = []
+    progress = st.progress(0, '检测各股信号...')
+    total = len(df)
+    for i, (_, row) in enumerate(df.iterrows()):
+        ts_code = row['ts_code']
+        code = ts_code.split('.')[0]
+        stock_path = os.path.join(DATA_DIR, f'stock_daily_{code}.csv')
+        if not os.path.exists(stock_path):
+            records.append({'ts_code': ts_code, 'signal': 'no_data', 'signal_count': 0})
+        else:
+            sdf = pd.read_csv(stock_path)
+            sdf['trade_date'] = pd.to_datetime(sdf['trade_date'])
+            sdf = sdf.sort_values('trade_date').reset_index(drop=True)
+            sig_count = 0
+            for ind_name, params in top_inds:
+                cfg = INDICATOR_REGISTRY.get(ind_name)
+                if cfg is None:
+                    continue
+                try:
+                    raw = cfg['func'](sdf, **params)
+                    filtered = filter_signals(sdf, raw)
+                    if filtered.tail(30).any():
+                        sig_count += 1
+                except Exception:
+                    pass
+            signal_label = 'buy' if sig_count >= 1 else 'none'
+            records.append({'ts_code': ts_code, 'signal': signal_label, 'signal_count': sig_count})
+        progress.progress((i + 1) / total)
+
+    progress.empty()
+    result = pd.DataFrame(records)
+    with open(cache_path, 'w') as f:
+        f.write(f"# cached_date={last_date}\n")
+    result.to_csv(cache_path, mode='a', index=False)
+    st.session_state.odds_signal_cache = result
+    return result
+
+
+def toggle_favorite(ts_code):
+    """Toggle a stock in/out of favorites set."""
+    favs = st.session_state.odds_favorites
+    if ts_code in favs:
+        favs.discard(ts_code)
+    else:
+        favs.add(ts_code)
 
 
 def run_backtest_now():
@@ -1089,6 +1200,8 @@ def main():
     st.caption("基于历史行情回测，筛选有效的技术指标买入信号")
 
     render_sidebar()
+
+    load_odds()
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "📈 行情周期总览",
