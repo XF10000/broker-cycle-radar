@@ -101,7 +101,9 @@ def _get_pro():
     with open(TOKEN_FILE) as f:
         token = f.read().strip()
     ts.set_token(token)
-    return ts.pro_api()
+    pro = ts.pro_api()
+    pro.__timeout = 10  # 10-second timeout per API call
+    return pro
 
 
 def _cache_path(name):
