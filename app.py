@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data_fetcher import (
     fetch_index_daily, fetch_all_stocks_daily, daily_to_weekly,
-    fetch_moneyflow, STOCKS, INDEX_CODE, INDEX_CONSTITUENTS,
+    STOCKS, INDEX_CODE, INDEX_CONSTITUENTS,
 )
 from indicators import get_all_signal_rules, INDICATOR_REGISTRY, filter_signals, get_indicator_lines
 from backtest import run_backtest, run_and_save, run_and_save_all, judge_signal, count_false_signals, run_all_stocks_backtest
@@ -42,7 +42,6 @@ def init_session():
         'index_weekly': None,
         'stocks_daily': {},
         'stocks_weekly': {},
-        'stocks_moneyflow': {},
         'backtest_results': None,
         'stock_results': None,
         'cycles_df': None,
@@ -79,7 +78,6 @@ def load_all_data_cached(force_refresh=False):
 
     result['stocks_daily'] = {}
     result['stocks_weekly'] = {}
-    result['stocks_moneyflow'] = {}
     for code in INDEX_CONSTITUENTS:
         ts_code = f'{code}.SH' if code.startswith('6') else f'{code}.SZ'
         try:
@@ -89,12 +87,6 @@ def load_all_data_cached(force_refresh=False):
                 result['stocks_weekly'][code] = daily_to_weekly(sd)
         except Exception as e:
             errors.append(f'个股{code}: {e}')
-        try:
-            mf = fetch_moneyflow(ts_code)
-            if not mf.empty:
-                result['stocks_moneyflow'][code] = mf
-        except Exception:
-            pass
 
     result['errors'] = errors
     return result
@@ -109,7 +101,6 @@ def load_data(force=False):
     st.session_state.index_weekly = data.get('index_weekly')
     st.session_state.stocks_daily = data.get('stocks_daily', {})
     st.session_state.stocks_weekly = data.get('stocks_weekly', {})
-    st.session_state.stocks_moneyflow = data.get('stocks_moneyflow', {})
     st.session_state.data_loaded = True
     st.session_state.data_error = '; '.join(data.get('errors', []))
     if st.session_state.index_daily is not None:

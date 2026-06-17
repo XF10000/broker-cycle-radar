@@ -1,12 +1,19 @@
-"""Shared tushare data fetching with local CSV caching."""
+"""Dual-source (AKShare primary, tushare fallback) data fetching with local CSV caching.
+
+Schema (统一口径，对齐原 tushare 缓存):
+    ts_code      str   '600030.SH' / '399975.SZ'
+    trade_date   datetime
+    open/high/low/close  float
+    vol          float  单位：手 (AKShare 股 / 100)
+    amount       float  单位：千元 (AKShare 元 / 1000)
+"""
 import os
 import pandas as pd
-import tushare as ts
-from datetime import datetime, timedelta
+from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
-TOKEN_FILE = os.path.join(BASE_DIR, '.tushare_token')
+TUSHARE_TOKEN_FILE = os.path.join(BASE_DIR, '.tushare_token')
 
 STOCKS = {
     '601066': '中信建投',
@@ -22,9 +29,9 @@ STOCKS = {
 }
 
 INDEX_CODE = '399975.SZ'
+INDEX_CODE_AK = 'sz399975'  # AKShare 新浪指数源格式
 
-# Hardcoded constituent list (49 stocks) — fallback when tushare index APIs unavailable
-# Source: user-provided 399975.SZ index constituent list as of 2026-06
+# Hardcoded constituent list (49 stocks) — final fallback when both AKShare & tushare fail
 INDEX_CONSTITUENTS = {
     '600909': '华安证券', '600621': '华鑫股份', '600906': '财达证券',
     '601375': '中原证券', '000783': '长江证券', '600999': '招商证券',
@@ -47,64 +54,202 @@ INDEX_CONSTITUENTS = {
 
 
 def _ts_code(code):
-    """Convert raw code to tushare ts_code format."""
+    """Convert raw code to ts_code format ('600030' -> '600030.SH')."""
     return f'{code}.SH' if code.startswith('6') else f'{code}.SZ'
 
 
-def fetch_index_constituents(force=False):
-    """
-    Fetch 399975.SZ current constituent stocks.
-    Tries tushare APIs first; falls back to hardcoded INDEX_CONSTITUENTS list.
-    Returns list of dicts with ts_code, name (float_mv/weight may be None).
-    Cached to data/index_constituents.csv
-    """
-    path = _cache_path('index_constituents')
-    if not force and _is_fresh(path, max_hours=24 * 30):
-        df = pd.read_csv(path)
-        return df.to_dict('records')
+def _ak_symbol(ts_code):
+    """Convert ts_code to AKShare sina symbol ('600030.SH' -> 'sh600030')."""
+    code, market = ts_code.split('.')
+    return f'sh{code}' if market == 'SH' else f'sz{code}'
 
-    # Attempt tushare APIs
-    pro = _get_pro()
-    for api_name, api_call in [
-        ('index_weight', lambda: pro.index_weight(
-            index_code=INDEX_CODE, trade_date=datetime.now().strftime('%Y%m%d'),
-            fields='index_code,con_code,trade_date,weight')),
-        ('index_member', lambda: pro.index_member(
-            index_code=INDEX_CODE,
-            fields='index_code,con_code,con_name,in_date,out_date,is_new')),
-    ]:
-        try:
-            df = api_call()
-            if df is not None and not df.empty:
-                result = []
-                for _, row in df.iterrows():
-                    code = row.get('con_code', '')
-                    result.append({
-                        'ts_code': code,
-                        'name': row.get('con_name', INDEX_CONSTITUENTS.get(code.split('.')[0], '')),
-                        'float_mv': None,
-                        'weight': row.get('weight'),
-                    })
-                pd.DataFrame(result).to_csv(path, index=False)
-                return result
-        except Exception:
-            continue
 
-    # Fallback: hardcoded list
-    result = [{'ts_code': _ts_code(code), 'name': name, 'float_mv': None, 'weight': None}
-              for code, name in INDEX_CONSTITUENTS.items()]
-    pd.DataFrame(result).to_csv(path, index=False)
+# ---------------------------------------------------------------------------
+# Normalization layer
+# ---------------------------------------------------------------------------
+
+def _normalize_akshare_stock(df, ts_code):
+    """Normalize AKShare stock_zh_a_daily output to unified schema.
+    Input columns: date, open, high, low, close, volume, amount, ...
+    Output: ts_code, trade_date, open, high, low, close, vol(手), amount(千元)
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+    required = {'date', 'open', 'high', 'low', 'close', 'volume', 'amount'}
+    if not required.issubset(df.columns):
+        raise ValueError(f'AKShare stock 缺字段: {set(df.columns) ^ required}')
+    out = pd.DataFrame({
+        'ts_code': ts_code,
+        'trade_date': pd.to_datetime(df['date']),
+        'open': df['open'].astype(float),
+        'high': df['high'].astype(float),
+        'low': df['low'].astype(float),
+        'close': df['close'].astype(float),
+        'vol': df['volume'].astype(float) / 100.0,        # 股 -> 手
+        'amount': df['amount'].astype(float) / 1000.0,    # 元 -> 千元
+    })
+    return out.sort_values('trade_date').reset_index(drop=True)
+
+
+def _normalize_akshare_index(df, ts_code):
+    """Normalize AKShare stock_zh_index_daily output to unified schema.
+    Input columns: date, open, high, low, close, volume
+    指数无 amount 列，填 NaN。
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+    required = {'date', 'open', 'high', 'low', 'close', 'volume'}
+    if not required.issubset(df.columns):
+        raise ValueError(f'AKShare index 缺字段: {set(df.columns) ^ required}')
+    out = pd.DataFrame({
+        'ts_code': ts_code,
+        'trade_date': pd.to_datetime(df['date']),
+        'open': df['open'].astype(float),
+        'high': df['high'].astype(float),
+        'low': df['low'].astype(float),
+        'close': df['close'].astype(float),
+        'vol': df['volume'].astype(float) / 100.0,        # 股 -> 手
+        'amount': float('nan'),                            # 指数新浪源无 amount
+    })
+    return out.sort_values('trade_date').reset_index(drop=True)
+
+
+def _normalize_tushare(df):
+    """tushare 输出已是目标口径（手/千元），仅做类型规范化。"""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    df['trade_date'] = pd.to_datetime(df['trade_date'])
+    for c in ('open', 'high', 'low', 'close', 'vol', 'amount'):
+        if c in df.columns:
+            df[c] = df[c].astype(float)
+    return df.sort_values('trade_date').reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# AKShare source (primary)
+# ---------------------------------------------------------------------------
+
+def _ak_get_pro():
+    """Lazy import akshare to avoid hard dependency at module import time."""
+    import akshare as ak
+    return ak
+
+
+def _akshare_index_daily(start_date=None, end_date=None):
+    """Fetch index daily from AKShare. Raises on failure."""
+    ak = _ak_get_pro()
+    df = ak.stock_zh_index_daily(symbol=INDEX_CODE_AK)
+    out = _normalize_akshare_index(df, INDEX_CODE)
+    if start_date:
+        out = out[out['trade_date'] >= pd.Timestamp(start_date)]
+    if end_date:
+        out = out[out['trade_date'] <= pd.Timestamp(end_date)]
+    if out.empty:
+        raise ValueError('AKShare index 返回空')
+    return out
+
+
+def _akshare_stock_daily(ts_code, start_date=None, end_date=None):
+    """Fetch stock daily from AKShare (sina source, unadjusted). Raises on failure."""
+    ak = _ak_get_pro()
+    sym = _ak_symbol(ts_code)
+    df = ak.stock_zh_a_daily(symbol=sym, start_date=start_date, end_date=end_date, adjust="")
+    out = _normalize_akshare_stock(df, ts_code)
+    if out.empty:
+        raise ValueError(f'AKShare stock {ts_code} 返回空')
+    return out
+
+
+def _akshare_index_constituents():
+    """Fetch 399975 constituents from AKShare. Raises on failure."""
+    ak = _ak_get_pro()
+    df = ak.index_stock_cons_csindex(symbol='399975')
+    if df is None or df.empty:
+        raise ValueError('AKShare 成分股返回空')
+    # 列: 日期, 指数代码, 指数名称, ..., 成分券代码, 成分券名称, ...
+    code_col = '成分券代码' if '成分券代码' in df.columns else df.columns[4]
+    name_col = '成分券名称' if '成分券名称' in df.columns else df.columns[5]
+    result = [{
+        'ts_code': _ts_code(str(r[code_col]).zfill(6)),
+        'name': r[name_col],
+        'float_mv': None,
+        'weight': None,
+    } for _, r in df.iterrows()]
     return result
 
 
-def _get_pro():
-    with open(TOKEN_FILE) as f:
+# ---------------------------------------------------------------------------
+# tushare source (fallback)
+# ---------------------------------------------------------------------------
+
+def _ts_get_pro():
+    import tushare as ts
+    if not os.path.exists(TUSHARE_TOKEN_FILE):
+        raise RuntimeError('tushare token 不存在')
+    with open(TUSHARE_TOKEN_FILE) as f:
         token = f.read().strip()
     ts.set_token(token)
     pro = ts.pro_api()
-    pro.__timeout = 10  # 10-second timeout per API call
     return pro
 
+
+def _tushare_index_daily(start_date=None, end_date=None):
+    """Fetch index daily from tushare. Raises on failure."""
+    pro = _ts_get_pro()
+    kwargs = {'ts_code': INDEX_CODE,
+              'fields': 'ts_code,trade_date,open,high,low,close,vol,amount'}
+    if start_date:
+        kwargs['start_date'] = pd.Timestamp(start_date).strftime('%Y%m%d')
+    if end_date:
+        kwargs['end_date'] = pd.Timestamp(end_date).strftime('%Y%m%d')
+    df = pro.index_daily(**kwargs)
+    out = _normalize_tushare(df)
+    if out.empty:
+        raise ValueError('tushare index 返回空')
+    return out
+
+
+def _tushare_stock_daily(ts_code, start_date=None, end_date=None):
+    """Fetch stock daily from tushare. Raises on failure."""
+    pro = _ts_get_pro()
+    kwargs = {'ts_code': ts_code,
+              'fields': 'ts_code,trade_date,open,high,low,close,vol,amount'}
+    if start_date:
+        kwargs['start_date'] = pd.Timestamp(start_date).strftime('%Y%m%d')
+    if end_date:
+        kwargs['end_date'] = pd.Timestamp(end_date).strftime('%Y%m%d')
+    df = pro.daily(**kwargs)
+    out = _normalize_tushare(df)
+    if out.empty:
+        raise ValueError(f'tushare stock {ts_code} 返回空')
+    return out
+
+
+def _tushare_index_constituents():
+    """tushare index_weight 在 2000 积分下不可用，直接抛错触发硬编码兜底。"""
+    raise RuntimeError('tushare index_weight 2000 积分下不可用')
+
+
+# ---------------------------------------------------------------------------
+# Dual-source dispatchers
+# ---------------------------------------------------------------------------
+
+def _try_sources(name, *fetchers):
+    """依次尝试每个 fetcher，返回第一个成功的结果；全部失败则抛聚合异常。"""
+    last_err = None
+    for fetcher in fetchers:
+        try:
+            return fetcher()
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f'{name} 所有数据源失败: {last_err}')
+
+
+# ---------------------------------------------------------------------------
+# Caching helpers
+# ---------------------------------------------------------------------------
 
 def _cache_path(name):
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -118,6 +263,27 @@ def _is_fresh(path, max_hours=12):
     return (datetime.now() - mtime).total_seconds() < max_hours * 3600
 
 
+def _needs_eod_update(path):
+    """盘后更新检查：工作日 15:00 后，缓存最新数据日期 < 今天 → True。
+    用于 force=False 时绕过 mtime 新鲜度判定，触发增量拉取当天收盘新数据。
+    """
+    if not os.path.exists(path):
+        return False
+    now = datetime.now()
+    if now.hour < 15:           # 盘中不触发
+        return False
+    if now.weekday() >= 5:      # 周末不触发（非交易日）
+        return False
+    try:
+        df = pd.read_csv(path)
+        if 'trade_date' not in df.columns or df.empty:
+            return False
+        last = pd.to_datetime(df['trade_date']).max().date()
+        return last < now.date()
+    except Exception:
+        return False
+
+
 def _read_csv(path):
     df = pd.read_csv(path)
     if 'trade_date' in df.columns:
@@ -125,100 +291,159 @@ def _read_csv(path):
     return df
 
 
+def _append_and_save(existing, new, path):
+    """合并增量数据，去重，按日期排序后落盘。返回合并后的 DataFrame。"""
+    if new is None or new.empty:
+        return existing.sort_values('trade_date').reset_index(drop=True) if existing is not None else pd.DataFrame()
+    if existing is None or existing.empty:
+        combined = new
+    else:
+        combined = pd.concat([existing, new], ignore_index=True)
+    combined = combined.drop_duplicates(subset=['trade_date']).sort_values('trade_date').reset_index(drop=True)
+    combined.to_csv(path, index=False)
+    return combined
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def fetch_index_constituents(force=False):
+    """获取 399975.SZ 当前成分股列表。
+    主源 AKShare → 备源 tushare → 硬编码兜底。
+    返回 list[dict]: {ts_code, name, float_mv, weight}
+    缓存到 data/index_constituents.csv，月度新鲜度。
+    """
+    path = _cache_path('index_constituents')
+    if not force and _is_fresh(path, max_hours=24 * 30):
+        df = pd.read_csv(path)
+        return df.to_dict('records')
+
+    def _ak():
+        return _akshare_index_constituents()
+
+    def _ts():
+        return _tushare_index_constituents()
+
+    def _hardcoded():
+        return [{'ts_code': _ts_code(code), 'name': name, 'float_mv': None, 'weight': None}
+                for code, name in INDEX_CONSTITUENTS.items()]
+
+    try:
+        result = _try_sources('fetch_index_constituents', _ak, _ts)
+    except Exception:
+        result = _hardcoded()
+
+    pd.DataFrame(result).to_csv(path, index=False)
+    return result
+
+
 def fetch_index_daily(force=False):
-    """Fetch 399975.SZ daily K-line. Cached to data/index_daily.csv"""
+    """获取 399975.SZ 日线。主源 AKShare → 备源 tushare。
+    缓存命中：非 force 且 mtime 新鲜 且 不需盘后更新。
+    工作日 15:00 后若缓存最新日期 < 今天，自动触发增量拉取。
+    """
     path = _cache_path('index_daily')
-    if not force and _is_fresh(path):
+    if not force and _is_fresh(path) and not _needs_eod_update(path):
         return _read_csv(path)
 
-    pro = _get_pro()
-    # Incremental: if cache exists, only fetch new data if stale (>1 day old)
-    if force and os.path.exists(path):
+    existing = None
+    if os.path.exists(path):
         try:
-            existing = pd.read_csv(path)
-            existing['trade_date'] = pd.to_datetime(existing['trade_date'])
-            last_date = existing['trade_date'].max()
-            # Check if cache is already up to date (within 1 day)
-            if (datetime.now() - last_date).days <= 1:
-                return existing.sort_values('trade_date').reset_index(drop=True)
-            last_date_str = last_date.strftime('%Y%m%d')
-            df = pro.index_daily(ts_code=INDEX_CODE, start_date=last_date_str,
-                                 fields='ts_code,trade_date,open,high,low,close,vol,amount')
-            if df is not None and not df.empty:
-                df['trade_date'] = pd.to_datetime(df['trade_date'])
-                combined = pd.concat([existing, df], ignore_index=True)
-                combined = combined.drop_duplicates(subset=['trade_date']).sort_values('trade_date').reset_index(drop=True)
-                combined.to_csv(path, index=False)
-                return combined
+            existing = _read_csv(path)
         except Exception:
-            pass  # API failed, use cached as-is
-        return existing.sort_values('trade_date').reset_index(drop=True)
+            existing = None
 
-    # Full fetch
+    # 增量模式：缓存存在
+    if existing is not None and not existing.empty:
+        last_date = existing['trade_date'].max()
+        # 缓存最新日期已是今天 → 无需再拉（force=True 也一样）
+        if last_date.date() >= datetime.now().date():
+            return existing.sort_values('trade_date').reset_index(drop=True)
+        start_date = last_date + pd.Timedelta(days=1)
+
+        def _ak():
+            return _akshare_index_daily(start_date=start_date)
+        def _ts():
+            return _tushare_index_daily(start_date=start_date)
+
+        try:
+            new = _try_sources('fetch_index_daily(增量)', _ak, _ts)
+            return _append_and_save(existing, new, path)
+        except Exception:
+            return existing.sort_values('trade_date').reset_index(drop=True)
+
+    # 全量拉取
+    def _ak():
+        return _akshare_index_daily(start_date='2008-01-01')
+    def _ts():
+        return _tushare_index_daily(start_date='2008-01-01')
+
     try:
-        df = pro.index_daily(ts_code=INDEX_CODE, start_date='20080101',
-                             fields='ts_code,trade_date,open,high,low,close,vol,amount')
-        df['trade_date'] = pd.to_datetime(df['trade_date'])
-        df = df.sort_values('trade_date').reset_index(drop=True)
+        df = _try_sources('fetch_index_daily(全量)', _ak, _ts)
         df.to_csv(path, index=False)
         return df
     except Exception:
-        # Fallback: return cached if available
-        if os.path.exists(path):
-            existing = pd.read_csv(path)
-            existing['trade_date'] = pd.to_datetime(existing['trade_date'])
+        if existing is not None:
             return existing
         return pd.DataFrame()
 
 
 def fetch_stock_daily(ts_code, force=False):
-    """Fetch individual stock daily K-line."""
+    """获取个股日线。主源 AKShare → 备源 tushare。
+    缓存命中：非 force 且 mtime 新鲜 且 不需盘后更新。
+    工作日 15:00 后若缓存最新日期 < 今天，自动触发增量拉取。
+    """
     code = ts_code.split('.')[0]
     path = _cache_path(f'stock_daily_{code}')
-    if not force and _is_fresh(path):
+    if not force and _is_fresh(path) and not _needs_eod_update(path):
         return _read_csv(path)
 
-    pro = _get_pro()
-    # Incremental: if cache exists, only fetch new data if stale (>1 day old)
-    if force and os.path.exists(path):
+    existing = None
+    if os.path.exists(path):
         try:
-            existing = pd.read_csv(path)
-            existing['trade_date'] = pd.to_datetime(existing['trade_date'])
-            last_date = existing['trade_date'].max()
-            if (datetime.now() - last_date).days <= 1:
-                return existing.sort_values('trade_date').reset_index(drop=True)
-            last_date_str = last_date.strftime('%Y%m%d')
-            df = pro.daily(ts_code=ts_code, start_date=last_date_str,
-                           fields='ts_code,trade_date,open,high,low,close,vol,amount')
-            if df is not None and not df.empty:
-                df['trade_date'] = pd.to_datetime(df['trade_date'])
-                combined = pd.concat([existing, df], ignore_index=True)
-                combined = combined.drop_duplicates(subset=['trade_date']).sort_values('trade_date').reset_index(drop=True)
-                combined.to_csv(path, index=False)
-                return combined
+            existing = _read_csv(path)
         except Exception:
-            pass
-        return existing.sort_values('trade_date').reset_index(drop=True)
+            existing = None
 
-    # Full fetch
+    if existing is not None and not existing.empty:
+        last_date = existing['trade_date'].max()
+        if last_date.date() >= datetime.now().date():
+            return existing.sort_values('trade_date').reset_index(drop=True)
+        start_date = last_date + pd.Timedelta(days=1)
+
+        def _ak():
+            return _akshare_stock_daily(ts_code, start_date=start_date.strftime('%Y%m%d'))
+        def _ts():
+            return _tushare_stock_daily(ts_code, start_date=start_date)
+
+        try:
+            new = _try_sources(f'fetch_stock_daily({ts_code}, 增量)', _ak, _ts)
+            return _append_and_save(existing, new, path)
+        except Exception:
+            return existing.sort_values('trade_date').reset_index(drop=True)
+
+    # 全量
+    def _ak():
+        return _akshare_stock_daily(ts_code, start_date='20080101', end_date=datetime.now().strftime('%Y%m%d'))
+    def _ts():
+        return _tushare_stock_daily(ts_code, start_date='2008-01-01')
+
     try:
-        df = pro.daily(ts_code=ts_code, start_date='20080101',
-                       fields='ts_code,trade_date,open,high,low,close,vol,amount')
-        if df is not None and not df.empty:
-            df['trade_date'] = pd.to_datetime(df['trade_date'])
-            df = df.sort_values('trade_date').reset_index(drop=True)
-            df.to_csv(path, index=False)
-            return df
+        df = _try_sources(f'fetch_stock_daily({ts_code}, 全量)', _ak, _ts)
+        df.to_csv(path, index=False)
+        return df
     except Exception:
-        pass
-    return pd.DataFrame()
+        if existing is not None:
+            return existing
+        return pd.DataFrame()
 
 
 def fetch_all_stocks_daily(force=False):
-    """Fetch all 5 candidate stocks daily data."""
+    """Fetch all 10 candidate stocks daily data."""
     result = {}
     for code, name in STOCKS.items():
-        ts_code = f'{code}.SH' if code.startswith('6') else f'{code}.SZ'
+        ts_code = _ts_code(code)
         df = fetch_stock_daily(ts_code, force)
         if not df.empty:
             result[code] = df
@@ -239,27 +464,3 @@ def daily_to_weekly(df):
         'amount': 'sum',
     }).dropna().reset_index()
     return weekly
-
-
-def fetch_moneyflow(ts_code, force=False):
-    """
-    Fetch moneyflow data for a stock.
-    Returns empty DataFrame if permission denied or API unavailable.
-    """
-    code = ts_code.split('.')[0]
-    path = _cache_path(f'moneyflow_{code}')
-    if not force and _is_fresh(path):
-        df = _read_csv(path)
-        if 'trade_date' in df.columns:
-            return df
-    try:
-        pro = _get_pro()
-        df = pro.moneyflow_dc(ts_code=ts_code, start_date='20080101')
-        if df is not None and not df.empty:
-            df['trade_date'] = pd.to_datetime(df['trade_date'])
-            df = df.sort_values('trade_date').reset_index(drop=True)
-            df.to_csv(path)
-            return df
-    except Exception:
-        pass
-    return pd.DataFrame()
