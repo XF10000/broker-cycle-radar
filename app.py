@@ -176,9 +176,9 @@ def compute_odds_signals():
         return pd.DataFrame()
 
     top_inds = [
-        ('OBV底背离', {'lookback': 90}),
-        ('CCI脱离超卖', {'period': 20}),
-        ('MACD柱线缩短', {'fast': 12, 'slow': 26, 'signal': 9, 'consecutive': 3}),
+        ('OBV底背离', INDICATOR_REGISTRY['OBV底背离']['params'][0]),
+        ('CCI脱离超卖', INDICATOR_REGISTRY['CCI脱离超卖']['params'][0]),
+        ('MACD柱线缩短', INDICATOR_REGISTRY['MACD柱线缩短']['params'][0]),
     ]
 
     records = []

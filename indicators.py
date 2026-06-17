@@ -474,7 +474,7 @@ def get_all_signal_rules():
 # Signal context filter
 # ============================================================
 
-def filter_signals(df, signal_series, ma_period=250, decline_pct=20, cooldown=15, state_window=5, ref_highs=None):
+def filter_signals(df, signal_series, ma_period=250, decline_pct=20, cooldown=15, state_window=5, ref_highs=None, price_drop_threshold=2.0):
     """
     Post-filter signals with trend context and cooldown.
     Only keep signals when market is in correction/downtrend mode.
@@ -487,6 +487,12 @@ def filter_signals(df, signal_series, ma_period=250, decline_pct=20, cooldown=15
         state_window: trading days to keep context alive after last met (default 5).
         ref_highs: optional array of reference high prices (same length as df).
                    If None, uses rolling 250-day max.
+        price_drop_threshold: percent (default 2.0). Price-drop escape hatch — if a
+                   new signal fires within the cooldown window but close has dropped
+                   more than this threshold below the last kept signal's close, the
+                   signal is allowed through. Captures lower-entry second-bottom
+                   signals that the pure time-window cooldown would suppress. Set to
+                   None to disable.
     """
     close = df['close'].values.astype(float)
     n = len(close)
@@ -519,7 +525,14 @@ def filter_signals(df, signal_series, ma_period=250, decline_pct=20, cooldown=15
             elif i - last_context_idx > state_window:
                 filtered.iloc[i] = False
             elif i - last_signal_idx < cooldown:
-                filtered.iloc[i] = False
+                # Price-drop escape hatch: allow through if close has dropped
+                # meaningfully below the last kept signal's close.
+                if (price_drop_threshold is not None
+                        and last_signal_idx >= 0
+                        and close[i] < close[last_signal_idx] * (1 - price_drop_threshold / 100.0)):
+                    last_signal_idx = i
+                else:
+                    filtered.iloc[i] = False
             else:
                 last_signal_idx = i
 
