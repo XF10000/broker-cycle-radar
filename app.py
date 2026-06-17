@@ -385,9 +385,27 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
     cfg = INDICATOR_REGISTRY.get(indicator_name)
     if cfg is None: return
     params = cfg['params'][0]
+
+    # Build stock-specific ref_highs (same logic as backtest)
+    cycles_all = pd.read_csv(os.path.join(OUTPUT_DIR, 'cycles.csv'))
+    cycle_peaks = sorted([(pd.Timestamp(c['end_date']), c['end_price']) for _, c in cycles_all.iterrows()])
+    stock_ref_highs = []
+    compute_dates = compute_seg['trade_date']
+    compute_df = compute_seg.set_index('trade_date')
+    for d in compute_dates:
+        rh = None
+        for pd_, _ in cycle_peaks:
+            if pd_ <= d:
+                stock_on_date = compute_df[compute_df.index == pd_]
+                if not stock_on_date.empty:
+                    rh = float(stock_on_date['close'].iloc[0])
+            else:
+                break
+        stock_ref_highs.append(rh if rh is not None else float(compute_seg[compute_seg['trade_date'] == d]['close'].iloc[0]))
+
     try:
         signals = cfg['func'](compute_seg, **params)
-        signals = filter_signals(compute_seg, signals)
+        signals = filter_signals(compute_seg, signals, ref_highs=stock_ref_highs)
     except Exception:
         return
 
@@ -403,13 +421,22 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
         increasing_line_color='red', decreasing_line_color='green',
     ), row=1, col=1)
 
-    # Add MA250 for context (no decline line — stock ref_highs differ from index)
+    # MA250
     full_close = compute_seg['close'].values.astype(float)
     ma250 = talib.SMA(full_close, 250)
     ma250_disp = ma250[disp_mask.values]
     fig.add_trace(go.Scatter(
         x=segment['trade_date'], y=ma250_disp,
         name='年线(250)', line=dict(color='orange', width=1),
+        connectgaps=False,
+    ), row=1, col=1)
+
+    # Stock-specific decline line (reuse stock_ref_highs from above)
+    decline_line = np.array(stock_ref_highs) * 0.80
+    decline_disp = decline_line[disp_mask.values]
+    fig.add_trace(go.Scatter(
+        x=segment['trade_date'], y=decline_disp,
+        name='跌20%线', line=dict(color='gray', width=1, dash='dash'),
         connectgaps=False,
     ), row=1, col=1)
 
