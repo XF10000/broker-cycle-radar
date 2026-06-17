@@ -1,0 +1,124 @@
+<h2>"优选赔率" Tab 布局（修订版）</h2>
+<p class="subtitle">左侧主排名表 + 右侧辅助卡片</p>
+
+<div class="split">
+  <div class="mockup" style="flex:2;">
+    <div class="mockup-header">📊 赔率排名表</div>
+    <div class="mockup-body" style="padding:12px;font-size:12px;background:#1e1e2e;">
+      <table style="width:100%;border-collapse:collapse;text-align:left;">
+        <thead>
+          <tr style="background:#2a2a3e;color:#aaa;">
+            <th style="padding:8px 10px;">#</th>
+            <th style="padding:8px 10px;">证券名称</th>
+            <th style="padding:8px 10px;">中位数Z</th>
+            <th style="padding:8px 10px;">置信度</th>
+            <th style="padding:8px 10px;">参与轮数</th>
+            <th style="padding:8px 10px;">信号</th>
+            <th style="padding:8px 10px;">关注</th>
+          </tr>
+          <tr style="background:#26263a;">
+            <td style="padding:8px 10px;">1</td>
+            <td style="padding:8px 10px;font-weight:bold;">中信证券</td>
+            <td style="padding:8px 10px;color:#4ade80;font-weight:bold;">+0.83</td>
+            <td style="padding:8px 10px;"><span style="background:#14532d;color:#4ade80;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:11px;">✓ 可信</span></td>
+            <td style="padding:8px 10px;">9轮</td>
+            <td style="padding:8px 10px;"><span style="background:#14532d;color:#22c55e;padding:2px 8px;border-radius:4px;font-size:11px;">▲ 买点</span></td>
+            <td style="padding:8px 10px;"><button style="background:#2563eb;color:#fff;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;">关注</button></td>
+          </tr>
+          <tr style="background:#222239;">
+            <td style="padding:8px 10px;">2</td>
+            <td style="padding:8px 10px;font-weight:bold;">华泰证券</td>
+            <td style="padding:8px 10px;color:#4ade80;font-weight:bold;">+0.61</td>
+            <td style="padding:8px 10px;"><span style="background:#14532d;color:#4ade80;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:11px;">✓ 可信</span></td>
+            <td style="padding:8px 10px;">8轮</td>
+            <td style="padding:8px 10px;"><span style="background:#14532d;color:#22c55e;padding:2px 8px;border-radius:4px;font-size:11px;">▲ 买点</span></td>
+            <td style="padding:8px 10px;"><button style="background:#374151;color:#eee;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;">已关注</button></td>
+          </tr>
+          <tr style="background:#26263a;">
+            <td style="padding:8px 10px;">3</td>
+            <td style="padding:8px 10px;font-weight:bold;">招商证券</td>
+            <td style="padding:8px 10px;color:#4ade80;font-weight:bold;">+0.45</td>
+            <td style="padding:8px 10px;"><span style="background:#14532d;color:#4ade80;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:11px;">✓ 可信</span></td>
+            <td style="padding:8px 10px;">7轮</td>
+            <td style="padding:8px 10px;"><span style="background:#374151;color:#aaa;padding:2px 8px;border-radius:4px;font-size:11px;">○ 无信号</span></td>
+            <td style="padding:8px 10px;"><button style="background:#2563eb;color:#fff;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;">关注</button></td>
+          </tr>
+          <tr style="background:#222239;">
+            <td style="padding:8px 10px;">4</td>
+            <td style="padding:8px 10px;font-weight:bold;">广发证券</td>
+            <td style="padding:8px 10px;color:#facc15;">+0.12</td>
+            <td style="padding:8px 10px;"><span style="background:#14532d;color:#4ade80;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:11px;">✓ 可信</span></td>
+            <td style="padding:8px 10px;">7轮</td>
+            <td style="padding:8px 10px;"><span style="background:#14532d;color:#22c55e;padding:2px 8px;border-radius:4px;font-size:11px;">▲ 买点</span></td>
+            <td style="padding:8px 10px;"><button style="background:#2563eb;color:#fff;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;">关注</button></td>
+          </tr>
+          <tr style="background:#26263a;">
+            <td style="padding:8px 10px;">5</td>
+            <td style="padding:8px 10px;font-weight:bold;">财达证券</td>
+            <td style="padding:8px 10px;color:#f87171;">-0.31</td>
+            <td style="padding:8px 10px;"><span style="background:#713f12;color:#eab308;padding:2px 8px;border-radius:4px;font-weight:bold;font-size:11px;">⚠ 参考</span></td>
+            <td style="padding:8px 10px;">2轮</td>
+            <td style="padding:8px 10px;"><span style="background:#450a1a;color:#f87171;padding:2px 8px;border-radius:4px;font-size:11px;">▼ 无买点</span></td>
+            <td style="padding:8px 10px;"><button style="background:#2563eb;color:#fff;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;">关注</button></td>
+          </tr>
+        </thead>
+      </table>
+    </div>
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;gap:16px;">
+    <div class="mockup">
+      <div class="mockup-header">📈 Z分布箱线图</div>
+      <div class="mockup-body" style="padding:12px;height:180px;background:#1e1e2e;">
+        <div class="placeholder" style="height:160px;">箱线图：每只个股在历轮周期的Z评分区间、中位数、极端值</div>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">🎯 最近N轮直接涨幅对比（共同窗口）</div>
+      <div class="mockup-body" style="padding:12px;height:160px;background:#1e1e2e;">
+        <div class="placeholder" style="height:140px;">柱状图：共同窗口里每只的真实涨幅（不计算Z），直觉锚点</div>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">📋 表格说明</div>
+      <div class="mockup-body" style="padding:12px;font-size:11px;color:#aaa;background:#1e1e2e;line-height:1.6;">
+        <strong>中位数Z</strong>：同一轮牛市里，这只个股相对同辈的超额表现（标准化）。越高越好。<br>
+        <strong>置信度</strong>：参与≥5轮=可信，3-4轮=参考，&lt;3轮=数据有限。<br>
+        <strong>信号</strong>：当前是否触发买点（来自指标检测系统）。<br>
+        <strong>关注</strong>：本地标注，不影响排名和计算。
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:16px;">
+  <div class="mockup" style="border-color:#6b21a8;">
+    <div class="mockup-header">📋 展开明细：中信证券（点击行展开/收起）</div>
+    <div class="mockup-body" style="padding:12px;background:#1e1e2e;">
+      <table style="width:100%;border-collapse:collapse;text-align:right;font-size:12px;">
+        <thead>
+          <tr style="background:#2a2a3e;color:#aaa;">
+            <th style="text-align:left;padding:6px 10px;">周期</th>
+            <th style="padding:6px 10px;">起始</th>
+            <th style="padding:6px 10px;">结束</th>
+            <th style="padding:6px 10px;">板块涨幅</th>
+            <th style="padding:6px 10px;">个股涨幅</th>
+            <th style="padding:6px 10px;">Z评分</th>
+          </tr>
+          <tr style="background:#26263a;">
+            <td style="text-align:left;padding:6px 10px;">#9 (2024)</td><td style="padding:6px 10px;">2024-09</td><td style="padding:6px 10px;">2024-12</td><td style="padding:6px 10px;color:#aaa;">+51.9%</td><td style="padding:6px 10px;color:#4ade80;">+68.3%</td><td style="padding:6px 10px;color:#4ade80;font-weight:bold;">+1.12</td>
+          </tr>
+          <tr style="background:#222239;">
+            <td style="text-align:left;padding:6px 10px;">#8 (2020)</td><td style="padding:6px 10px;">2020-06</td><td style="padding:6px 10px;">2020-07</td><td style="padding:6px 10px;color:#aaa;">+32.9%</td><td style="padding:6px 10px;color:#4ade80;">+41.2%</td><td style="padding:6px 10px;color:#4ade80;font-weight:bold;">+0.95</td>
+          </tr>
+          <tr style="background:#26263a;">
+            <td style="text-align:left;padding:6px 10px;">#7 (2019)</td><td style="padding:6px 10px;">2019-01</td><td style="padding:6px 10px;">2019-04</td><td style="padding:6px 10px;color:#aaa;">+34.0%</td><td style="padding:6px 10px;color:#4ade80;">+39.5%</td><td style="padding:6px 10px;color:#4ade80;font-weight:bold;">+0.88</td>
+          </tr>
+          <tr style="background:#222239;text-align:center;color:#666;font-size:11px;">
+            <td colspan="6">... 更多历史周期数据 ...</td>
+          </tr>
+        </thead>
+      </table>
+    </div>
+  </div>
+</div>
