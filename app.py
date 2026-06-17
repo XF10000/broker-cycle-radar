@@ -1200,7 +1200,10 @@ def _render_signal_summary(top_inds):
     if st.session_state.odds_df is not None and not st.session_state.odds_df.empty:
         for _, r in st.session_state.odds_df.iterrows():
             raw = r['ts_code'].split('.')[0]
-            z_map[raw] = r.get('median_z', -999)
+            z = r.get('median_z', -999)
+            if pd.isna(z):
+                z = -999
+            z_map[raw] = float(z)
 
     rows = []
     for code, df in st.session_state.stocks_daily.items():
@@ -1233,8 +1236,8 @@ def _render_signal_summary(top_inds):
             })
     
     if rows:
-        df_rows = pd.DataFrame(rows)
-        df_rows = df_rows.sort_values('_z', ascending=False).drop(columns=['_z'])
+        rows.sort(key=lambda r: r['_z'], reverse=True)
+        df_rows = pd.DataFrame(rows).drop(columns=['_z'])
         st.dataframe(df_rows, use_container_width=True, hide_index=True)
     else:
         st.info("暂无信号数据")
