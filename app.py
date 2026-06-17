@@ -173,7 +173,7 @@ def compute_odds_signals():
             first = f.readline()
         if last_date in first:
             try:
-                cached = pd.read_csv(cache_path)
+                cached = pd.read_csv(cache_path, comment='#')
                 if not cached.empty:
                     st.session_state.odds_signal_cache = cached
                     return cached
