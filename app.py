@@ -392,21 +392,22 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
     full_df['trade_date'] = pd.to_datetime(full_df['trade_date'])
     full_df = full_df.set_index('trade_date').sort_index()
     stock_ref_highs_full = _build_stock_ref_highs(full_df, stock_code)
-    if stock_ref_highs_full is None:
-        stock_ref_highs_full = [float(full_df.loc[d, 'close']) if d in full_df.index else 0.0 for d in full_df.index]
 
-    # Map ref_highs to compute_seg dates
-    stock_ref_highs = []
-    for d in compute_seg['trade_date']:
-        if d in full_df.index:
-            idx = full_df.index.get_loc(d)
-            stock_ref_highs.append(stock_ref_highs_full[idx])
-        else:
-            stock_ref_highs.append(float(compute_seg[compute_seg['trade_date'] == d]['close'].iloc[0]))
+    # Map ref_highs to compute_seg dates (or use None to trigger rolling 250 default)
+    stock_ref_highs = None
+    if stock_ref_highs_full is not None:
+        stock_ref_highs = []
+        for d in compute_seg['trade_date']:
+            if d in full_df.index:
+                idx = full_df.index.get_loc(d)
+                stock_ref_highs.append(stock_ref_highs_full[idx])
+            else:
+                stock_ref_highs.append(float(compute_seg[compute_seg['trade_date'] == d]['close'].iloc[0]))
 
     try:
+        sig_kwargs = {'ref_highs': stock_ref_highs} if stock_ref_highs is not None else {}
         signals = cfg['func'](compute_seg, **params)
-        signals = filter_signals(compute_seg, signals, ref_highs=stock_ref_highs)
+        signals = filter_signals(compute_seg, signals, **sig_kwargs)
     except Exception:
         return
 
@@ -432,8 +433,12 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
         connectgaps=False,
     ), row=1, col=1)
 
-    # Stock-specific decline line (reuse stock_ref_highs from above)
-    decline_line = np.array(stock_ref_highs) * 0.80
+    # Stock-specific decline line
+    if stock_ref_highs is not None:
+        decline_line = np.array(stock_ref_highs) * 0.80
+    else:
+        rolling_max = pd.Series(compute_seg['close'].values.astype(float)).rolling(250, min_periods=1).max().values
+        decline_line = rolling_max * 0.80
     decline_disp = decline_line[disp_mask.values]
     fig.add_trace(go.Scatter(
         x=segment['trade_date'], y=decline_disp,

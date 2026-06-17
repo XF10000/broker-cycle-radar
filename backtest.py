@@ -439,22 +439,24 @@ def _build_stock_ref_highs(stock_df, stock_code):
         return None
 
     cycle_df = pd.DataFrame(cycles)
-
-    # Require at least 3 cycles for meaningful ref_highs; fallback to None
-    if len(cycle_df) < 3:
-        return None
-
     cycle_df.to_csv(cache_path, index=False)
 
-    # Build ref_highs: for each date, use last cycle's end_price before that date
-    cycle_peaks = sorted([(c['end_date'], c['end_price']) for _, c in cycle_df.iterrows()])
+    # Hybrid: before first cycle end → rolling 250-day max; after → own cycle end price
+    first_cycle_end = cycle_df['end_date'].min()
+    close_vals = stock_df['close'].values.astype(float)
+    rolling_max = pd.Series(close_vals).rolling(250, min_periods=1).max().values
+    cycle_peaks_sorted = sorted([(c['end_date'], c['end_price']) for _, c in cycle_df.iterrows()])
+
     ref_highs = []
-    for d in stock_df.index:
-        rh = None
-        for peak_date, peak_price in cycle_peaks:
-            if peak_date <= d: rh = peak_price
-            else: break
-        ref_highs.append(rh if rh is not None else float(stock_df.loc[d, 'close']))
+    for i, d in enumerate(stock_df.index):
+        if d < first_cycle_end:
+            ref_highs.append(rolling_max[i])
+        else:
+            rh = None
+            for peak_date, peak_price in cycle_peaks_sorted:
+                if peak_date <= d: rh = peak_price
+                else: break
+            ref_highs.append(rh if rh is not None else rolling_max[i])
 
     return ref_highs
 
