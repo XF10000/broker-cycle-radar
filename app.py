@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data_fetcher import (
     fetch_index_daily, fetch_all_stocks_daily, daily_to_weekly,
-    fetch_moneyflow, STOCKS, INDEX_CODE,
+    fetch_moneyflow, STOCKS, INDEX_CODE, INDEX_CONSTITUENTS,
 )
 from indicators import get_all_signal_rules, INDICATOR_REGISTRY, filter_signals, get_indicator_lines
 from backtest import run_backtest, run_and_save, run_and_save_all, judge_signal, count_false_signals, run_all_stocks_backtest
@@ -80,7 +80,7 @@ def load_all_data_cached():
     result['stocks_daily'] = {}
     result['stocks_weekly'] = {}
     result['stocks_moneyflow'] = {}
-    for code in STOCKS:
+    for code in INDEX_CONSTITUENTS:
         ts_code = f'{code}.SH' if code.startswith('6') else f'{code}.SZ'
         try:
             sd = _fetch_stk(ts_code)
@@ -1004,7 +1004,7 @@ def render_live_tracking():
     # ---- Individual stock charts ----
     st.subheader("个股详情")
     stock_codes = list(st.session_state.stocks_daily.keys())
-    stock_names = {code: STOCKS.get(code, code) for code in stock_codes}
+    stock_names = {code: INDEX_CONSTITUENTS.get(code, code) for code in stock_codes}
     sel_live = st.selectbox('选择个股', stock_codes, format_func=lambda c: f"{c} {stock_names[c]}", key='live_stock')
     if sel_live and sel_live in st.session_state.stocks_daily:
         _render_live_chart(st.session_state.stocks_daily[sel_live], sel_live, top_inds, is_index=False)
@@ -1162,7 +1162,7 @@ def _render_signal_summary(top_inds):
     """Show current signal status for all stocks."""
     rows = []
     for code, df in st.session_state.stocks_daily.items():
-        name = STOCKS.get(code, code)
+        name = INDEX_CONSTITUENTS.get(code, code)
         df = df.copy()
         df['trade_date'] = pd.to_datetime(df['trade_date'])
         df = df.sort_values('trade_date')
