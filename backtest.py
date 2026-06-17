@@ -506,7 +506,7 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
         hit_count = 0
         weighted_hits = 0
 
-        for cycle in cycles:
+        for i, cycle in enumerate(cycles):
             start = pd.Timestamp(cycle['start_date'])
             end = pd.Timestamp(cycle['end_date'])
             ws = start - pd.Timedelta(days=signal_window)
@@ -519,10 +519,11 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
             if j['hit']:
                 hits += 1
                 days_list.append(j['days_before'])
+                weighted_hits += cycle_weights[i]
 
-            hit_rate = hits / total_cycles if total_cycles > 0 else 0
-            weighted_hr = weighted_hits / total_weight if total_weight > 0 else 0
-            avg_days = np.mean(days_list) if days_list else None
+        hit_rate = hits / total_cycles if total_cycles > 0 else 0
+        weighted_hr = weighted_hits / total_weight if total_weight > 0 else 0
+        avg_days = np.mean(days_list) if days_list else None
         precision = hit_count / total_signals if total_signals > 0 else 0
         days_score = 0
         if avg_days is not None:
