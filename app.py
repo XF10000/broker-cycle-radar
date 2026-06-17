@@ -421,6 +421,7 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
         x=segment['trade_date'], open=segment['open'], high=segment['high'],
         low=segment['low'], close=segment['close'], name=stock_name,
         increasing_line_color='red', decreasing_line_color='green',
+        showlegend=False,
     ), row=1, col=1)
 
     # MA250
@@ -471,7 +472,10 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
     fig.update_xaxes(rangebreaks=_build_rangebreaks(segment['trade_date']), tickformat='%Y-%m-%d',
                      rangeslider_visible=False, row=1, col=1)
     fig.update_layout(title=f"{stock_name} 行情{cycle_idx+1}  {cycle['start_date'][:10]}→{cycle['end_date'][:10]}",
-                       height=420, showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
+                       height=420,
+                       showlegend=True,
+                       legend=dict(orientation='h', y=-0.08, x=0.5, xanchor='center', font=dict(size=9)),
+                       margin=dict(l=10, r=10, t=40, b=40))
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -690,6 +694,7 @@ def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线'):
         name='价格',
         increasing_line_color='red',
         decreasing_line_color='green',
+        showlegend=False,
     ), row=1, col=1)
 
     # Add MA250 and decline threshold lines for context
@@ -765,8 +770,9 @@ def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线'):
     fig.update_layout(
         title=f"行情{cycle_idx+1}: {start.date()} → {end.date()} (+{cycle['change_pct']}%)",
         height=420,
-        showlegend=False,
-        margin=dict(l=10, r=10, t=40, b=10),
+        showlegend=True,
+        legend=dict(orientation='h', y=-0.08, x=0.5, xanchor='center', font=dict(size=9)),
+        margin=dict(l=10, r=10, t=40, b=40),
     )
     fig.update_xaxes(
         rangebreaks=_build_rangebreaks(segment['trade_date']) if freq != '周线' else None,
@@ -1157,6 +1163,7 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
         x=seg['trade_date'], open=seg['open'], high=seg['high'],
         low=seg['low'], close=seg['close'], name=label,
         increasing_line_color='red', decreasing_line_color='green',
+        showlegend=False,
     ), row=1, col=1)
 
     # Add 250MA and decline threshold to K-line
@@ -1278,15 +1285,16 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
                      rangeslider_visible=False, row=2, col=1)
     fig.update_layout(
         title=f"{'板块指数' if is_index else label} — 近1年走势",
-        height=900, showlegend=False,
-        margin=dict(l=10, r=10, t=40, b=10),
+        height=900,
+        showlegend=True,
+        legend=dict(orientation='h', y=-0.02, x=0.5, xanchor='center', font=dict(size=10)),
+        margin=dict(l=10, r=10, t=40, b=40),
     )
     st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_signal_summary(top_inds):
-    """Show current signal status for all stocks, sorted by Z score."""
-    # Build Z lookup
+    """Show current signal status for all stocks, sorted by signal strength then Z score."""
     z_map = {}
     if st.session_state.odds_df is not None and not st.session_state.odds_df.empty:
         for _, r in st.session_state.odds_df.iterrows():
@@ -1304,10 +1312,14 @@ def _render_signal_summary(top_inds):
         df['trade_date'] = pd.to_datetime(df['trade_date'])
         df = df.sort_values('trade_date')
         recent_cutoff = df['trade_date'].max() - pd.Timedelta(days=90)
-        
+
+        sig_count = 0
+        sig_names = []
+        sig_dates = []
         for ind_name in top_inds:
             cfg = INDICATOR_REGISTRY.get(ind_name)
-            if cfg is None: continue
+            if cfg is None:
+                continue
             try:
                 sig = cfg['func'](df, **cfg['params'][0])
                 sig = filter_signals(df, sig)
@@ -1315,20 +1327,34 @@ def _render_signal_summary(top_inds):
                 continue
             recent = (df['trade_date'] >= recent_cutoff).values
             recent_sig = sig.values & recent
-            last_date = None
             if recent_sig.any():
-                last_date = df['trade_date'].iloc[np.where(recent_sig)[0][-1]] if np.where(recent_sig)[0].size > 0 else None
-            rows.append({
-                '股票': name,
-                'Z评分': f"{z_val:+.2f}" if z_val > -999 else '—',
-                '指标': ind_name,
-                '最近信号': last_date.date() if last_date else '无',
-                '_z': z_val,
-            })
-    
+                sig_count += 1
+                sig_names.append(ind_name)
+                last_idx = np.where(recent_sig)[0][-1]
+                sig_dates.append(df['trade_date'].iloc[last_idx].date())
+
+        if sig_count >= 3:
+            stars = '★★★'
+        elif sig_count == 2:
+            stars = '★★☆'
+        elif sig_count == 1:
+            stars = '★☆☆'
+        else:
+            stars = '——'
+
+        rows.append({
+            '股票': name,
+            'Z评分': f"{z_val:+.2f}" if z_val > -999 else '—',
+            '信号': stars,
+            '触发指标': ' + '.join(sig_names) if sig_names else '—',
+            '最近信号日': max(sig_dates).strftime('%m-%d') if sig_dates else '—',
+            '_z': z_val,
+            '_cnt': sig_count,
+        })
+
     if rows:
-        rows.sort(key=lambda r: r['_z'], reverse=True)
-        df_rows = pd.DataFrame(rows).drop(columns=['_z'])
+        rows.sort(key=lambda r: (r['_cnt'], r['_z']), reverse=True)
+        df_rows = pd.DataFrame(rows).drop(columns=['_z', '_cnt'])
         st.dataframe(df_rows, use_container_width=True, hide_index=True)
     else:
         st.info("暂无信号数据")
@@ -1368,15 +1394,21 @@ def render_odds_tab():
     )
     st.caption(f"当前: 可信={len(df[df['cycle_count'] >= user_m])}只, 参考={len(df[(df['cycle_count'] >= 2) & (df['cycle_count'] < user_m)])}只, 有限={len(df[df['cycle_count'] < 2])}只")
 
+    # ---- Signal filter ----
+    show_signals_only = st.checkbox("仅显示当前有信号", value=False, key='odds_signal_filter',
+                                     help="勾选后只展示当前有买入信号的股票")
+
     # ---- Compute signals ----
     signal_df = compute_odds_signals()
     signal_map = {}
+    signal_count_map = {}
     if not signal_df.empty:
         signal_map = dict(zip(signal_df['ts_code'], signal_df['signal']))
+        signal_count_map = dict(zip(signal_df['ts_code'], signal_df['signal_count']))
 
     # ---- Main ranking table ----
     st.subheader("券商个股赔率排名")
-    st.caption("按中位数Z降序排列，点击列头可切换排序。▲ 买点 = 当前触发信号，○ = 无信号")
+    st.caption("按中位数Z降序排列。★数 = 当前 CCI/OBV/MACD 中有几个触发买入信号（近90天内），★越多信号质量越高。 —— = 当前无信号")
 
     display = df[['ts_code', 'name', 'median_z', 'max_z', 'positive_z_rate',
                    'median_return', 'max_return', 'beat_index_rate',
@@ -1394,18 +1426,28 @@ def render_odds_tab():
         lambda n: '✓ 可信' if n >= user_m else ('⚠ 参考' if n >= 2 else '▷ 有限'))
 
     def fmt_signal(code):
-        s = signal_map.get(code, 'no_data')
-        if s == 'buy':
-            return '▲ 买点'
-        elif s == 'no_data':
-            return '—'
-        return '○ 无'
+        cnt = int(signal_count_map.get(code, -1))
+        if cnt == 3:
+            return '★★★'
+        elif cnt == 2:
+            return '★★☆'
+        elif cnt == 1:
+            return '★☆☆'
+        elif cnt == 0:
+            return '——'
+        return '—'
     display['信号'] = display['ts_code'].apply(fmt_signal)
 
     display = display.sort_values('median_z', ascending=False).reset_index(drop=True)
 
+    if show_signals_only:
+        display = display[display['信号'] != '——']
+
     show_cols = ['#', 'name', '中位数Z', 'Z最高值', 'Z正值率', '中位涨幅',
                  '最大涨幅', '跑赢概率', '置信度', '轮数', '信号']
+
+    if show_signals_only:
+        st.caption(f"筛选结果: {len(display)} 只有信号的股票")
 
     st.dataframe(
         display[show_cols].rename(columns={'name': '名称'}),
@@ -1420,10 +1462,12 @@ def render_odds_tab():
 
     with col_ch1:
         st.subheader("中位数Z评分")
+        st.caption("Z>0 = 历史上多数行情涨得比平均多（弹性好），Z<0 = 涨得比平均少。取所有周期中位数")
         _render_z_bar(display)
 
     with col_ch2:
         st.subheader(f"中位涨幅%（共同窗口最近{meta.get('N', '—')}轮）")
+        st.caption(f"最近{meta.get('N', '—')}轮均有数据的行情中，每只股票各轮涨幅的中位数。正值=赚钱，负值=亏钱")
         _render_return_bar(display)
 
     # ---- Expandable detail ----
