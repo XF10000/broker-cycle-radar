@@ -414,6 +414,25 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
     df['trade_date'] = pd.to_datetime(df['trade_date'])
     df = df.set_index('trade_date').sort_index()
 
+    # Build stock-specific ref_highs from cycle end dates
+    cycle_peaks = sorted([(pd.Timestamp(c['end_date']), c['end_price']) for c in cycles_all])
+    stock_ref_highs = []
+    for d in df.index:
+        # Use index cycle end dates, but stock's close as reference
+        rh = None
+        for pd_, _ in cycle_peaks:
+            if pd_ <= d:
+                # Find stock's close on or nearest to the cycle end date
+                stock_on_date = df[df.index == pd_]
+                if not stock_on_date.empty:
+                    rh = float(stock_on_date['close'].iloc[0])
+                elif rh is None:
+                    # Before any cycle: use stock's own close
+                    rh = float(df.loc[d, 'close'])
+            else:
+                break
+        stock_ref_highs.append(rh if rh is not None else float(df.loc[d, 'close']))
+
     rules = get_all_signal_rules()
     results = []
 
@@ -424,7 +443,7 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
         try:
             sig_raw = rule['func'](df.reset_index(), **rule['params'])
             sig_raw.index = df.index
-            sig = filter_signals(df.reset_index(), sig_raw)
+            sig = filter_signals(df.reset_index(), sig_raw, ref_highs=stock_ref_highs)
             sig.index = df.index
         except Exception:
             continue
