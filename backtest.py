@@ -435,11 +435,16 @@ def _build_stock_ref_highs(stock_df, stock_code):
                 'change_pct': round(chg, 2),
             })
 
-        if not cycles:
-            return None
+    if not cycles:
+        return None
 
-        cycle_df = pd.DataFrame(cycles)
-        cycle_df.to_csv(cache_path, index=False)
+    cycle_df = pd.DataFrame(cycles)
+
+    # Require at least 3 cycles for meaningful ref_highs; fallback to None
+    if len(cycle_df) < 3:
+        return None
+
+    cycle_df.to_csv(cache_path, index=False)
 
     # Build ref_highs: for each date, use last cycle's end_price before that date
     cycle_peaks = sorted([(c['end_date'], c['end_price']) for _, c in cycle_df.iterrows()])
