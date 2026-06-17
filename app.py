@@ -1032,7 +1032,15 @@ def render_live_tracking():
     st.subheader("个股详情")
     stock_codes = list(st.session_state.stocks_daily.keys())
     stock_names = {code: INDEX_CONSTITUENTS.get(code, code) for code in stock_codes}
-    sel_live = st.selectbox('选择个股', stock_codes, format_func=lambda c: f"{c} {stock_names[c]}", key='live_stock')
+    z_map = {}
+    if st.session_state.odds_df is not None and not st.session_state.odds_df.empty:
+        for _, r in st.session_state.odds_df.iterrows():
+            raw = r['ts_code'].split('.')[0]
+            z_map[raw] = r.get('median_z', 0)
+        stock_codes.sort(key=lambda c: z_map.get(c, -999), reverse=True)
+    sel_live = st.selectbox('选择个股', stock_codes,
+        format_func=lambda c: f"{c} {stock_names[c]}" + (f"  [Z={z_map.get(c, 0):+.2f}]" if z_map else ""),
+        key='live_stock')
     if sel_live and sel_live in st.session_state.stocks_daily:
         _render_live_chart(st.session_state.stocks_daily[sel_live], sel_live, top_inds, is_index=False)
 
