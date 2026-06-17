@@ -435,11 +435,11 @@ def _build_stock_ref_highs(stock_df, stock_code):
                 'change_pct': round(chg, 2),
             })
 
-    if not cycles:
-        return None
+        if not cycles:
+            return None
 
-    cycle_df = pd.DataFrame(cycles)
-    cycle_df.to_csv(cache_path, index=False)
+        cycle_df = pd.DataFrame(cycles)
+        cycle_df.to_csv(cache_path, index=False)
 
     # Hybrid: before first cycle end → rolling 250-day max; after → own cycle end price
     first_cycle_end = cycle_df['end_date'].min()
