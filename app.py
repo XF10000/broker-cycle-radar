@@ -46,6 +46,7 @@ def init_session():
         'backtest_results': None,
         'stock_results': None,
         'cycles_df': None,
+        'display_cycles': None,
         'signal_window': 30,
         'last_data_date': '',
         'data_error': '',
@@ -115,7 +116,12 @@ def load_data(force=False):
 def load_cycles():
     path = os.path.join(OUTPUT_DIR, 'cycles.csv')
     if os.path.exists(path):
-        st.session_state.cycles_df = pd.read_csv(path)
+        all_df = pd.read_csv(path)
+        st.session_state.cycles_df = all_df  # keep all for reference calc
+        # Display only 2010+ cycles
+        st.session_state.display_cycles = all_df[
+            pd.to_datetime(all_df['start_date']) >= pd.Timestamp('2010-01-01')
+        ]
         return True
     return False
 
@@ -218,7 +224,7 @@ def render_stock_backtest():
     with col_s2:
         sel_ind = st.selectbox('选择指标', list(top_inds), key='stock_detail_ind')
 
-    if sel_stock and sel_ind and st.session_state.cycles_df is not None:
+    if sel_stock and sel_ind and st.session_state.display_cycles is not None:
         cycles = st.session_state.cycles_df.to_dict('records')
         stock_code = df[df['股票名'] == sel_stock].iloc[0]['股票']
         stock_data = st.session_state.stocks_daily.get(stock_code)
@@ -371,7 +377,7 @@ def render_sidebar():
 
     st.sidebar.subheader("行情窗口")
     if load_cycles():
-        n = len(st.session_state.cycles_df)
+        n = len(st.session_state.display_cycles)
         st.sidebar.success(f"已加载 {n} 轮行情")
     else:
         st.sidebar.warning("未找到 cycles.csv\n请先运行 detect_cycles.py")
@@ -417,9 +423,9 @@ def render_cycle_overview():
         decreasing_line_color='green',
     ))
 
-    if st.session_state.cycles_df is not None and not st.session_state.cycles_df.empty:
+    if st.session_state.display_cycles is not None and not st.session_state.display_cycles.empty:
         colors = ['rgba(255,0,0,0.08)', 'rgba(0,100,255,0.08)']
-        for i, row in st.session_state.cycles_df.iterrows():
+        for i, row in st.session_state.display_cycles.iterrows():
             color = colors[i % 2]
             fig.add_vrect(
                 x0=pd.Timestamp(row['start_date']),
@@ -445,9 +451,9 @@ def render_cycle_overview():
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    if st.session_state.cycles_df is not None and not st.session_state.cycles_df.empty:
+    if st.session_state.display_cycles is not None and not st.session_state.display_cycles.empty:
         st.subheader("行情周期明细")
-        display_df = st.session_state.cycles_df.copy()
+        display_df = st.session_state.display_cycles.copy()
         display_df['start_date'] = pd.to_datetime(display_df['start_date']).dt.date
         display_df['end_date'] = pd.to_datetime(display_df['end_date']).dt.date
         display_df.index = range(1, len(display_df) + 1)
@@ -826,8 +832,8 @@ def render_indicator_rankings():
         detail_freq = st.selectbox('周期', ['日线', '周线'], key='detail_freq')
 
     if selected_indicator:
-        if st.session_state.cycles_df is not None and st.session_state.index_daily is not None:
-            cycles = st.session_state.cycles_df.to_dict('records')
+        if st.session_state.display_cycles is not None and st.session_state.index_daily is not None:
+            cycles = st.session_state.display_cycles.to_dict('records')
             n_cycles = len(cycles)
             n_cols = min(2, n_cycles)
             n_rows = (n_cycles + n_cols - 1) // n_cols
@@ -846,7 +852,7 @@ def render_indicator_rankings():
     st.subheader("指标 × 行情 热力图")
 
     if st.session_state.cycles_df is not None and st.session_state.backtest_results is not None:
-        _render_heatmap(st.session_state.backtest_results, st.session_state.cycles_df)
+        _render_heatmap(st.session_state.backtest_results, st.session_state.display_cycles)
 
 
 def render_live_tracking():
