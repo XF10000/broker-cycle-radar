@@ -890,8 +890,8 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
 
     if seg.empty: return
 
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                         vertical_spacing=0.02, row_heights=[0.50, 0.25, 0.25])
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
+                         vertical_spacing=0.02, row_heights=[0.45, 0.20, 0.20, 0.15])
 
     fig.add_trace(go.Candlestick(
         x=seg['trade_date'], open=seg['open'], high=seg['high'],
@@ -993,8 +993,25 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
                 fig.add_trace(go.Scatter(x=sd, y=sh, mode='markers',
                     marker=dict(symbol='triangle-up', size=10, color='blue'), name='MACD信号'), row=3, col=1)
 
+    # OBV in row 4
+    obv_v = talib.OBV(seg['close'].values.astype(float), seg['vol'].values.astype(float))
+    fig.add_trace(go.Scatter(x=seg['trade_date'], y=obv_v, name='OBV',
+        line=dict(color='purple', width=1)), row=4, col=1)
+
+    # OBV signal markers
+    obv_cfg = INDICATOR_REGISTRY.get('OBV底背离')
+    if obv_cfg:
+        obv_raw = obv_cfg['func'](compute_seg, **obv_cfg['params'][0])
+        obv_filt = filter_signals(compute_seg, obv_raw, ref_highs=ref_highs)
+        obv_disp = obv_filt[disp_mask.values].reset_index(drop=True)
+        if obv_disp.any():
+            sd_dates = seg['trade_date'][obv_disp.values]
+            sd_vals = obv_v[obv_disp.values]
+            fig.add_trace(go.Scatter(x=sd_dates, y=sd_vals, mode='markers',
+                marker=dict(symbol='triangle-up', size=10, color='blue'), name='OBV信号'), row=4, col=1)
+
     fig.update_xaxes(rangebreaks=_build_rangebreaks(seg['trade_date']), tickformat='%Y-%m',
-                     rangeslider=dict(visible=True, thickness=0.03), row=3, col=1)
+                     rangeslider=dict(visible=True, thickness=0.03), row=4, col=1)
     fig.update_xaxes(rangebreaks=_build_rangebreaks(seg['trade_date']), tickformat='%Y-%m',
                      rangeslider_visible=False, row=1, col=1)
     fig.update_xaxes(rangebreaks=_build_rangebreaks(seg['trade_date']), tickformat='%Y-%m',
