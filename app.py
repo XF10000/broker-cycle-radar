@@ -364,10 +364,10 @@ def render_stock_backtest():
                     if ci >= n_cycles: break
                     cycle = cycles[ci]
                     with cols[col_idx]:
-                        _render_stock_cycle_detail(cycle, ci, sel_ind, sel_stock, sd)
+                        _render_stock_cycle_detail(cycle, ci, sel_ind, sel_stock, sd, stock_code)
 
 
-def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, stock_data):
+def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, stock_data, stock_code=''):
     """Render K-line chart for a stock with indicator signals."""
     start = pd.Timestamp(cycle['start_date'])
     end = pd.Timestamp(cycle['end_date'])
@@ -386,22 +386,23 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
     if cfg is None: return
     params = cfg['params'][0]
 
-    # Build stock-specific ref_highs (same logic as backtest)
-    cycles_all = pd.read_csv(os.path.join(OUTPUT_DIR, 'cycles.csv'))
-    cycle_peaks = sorted([(pd.Timestamp(c['end_date']), c['end_price']) for _, c in cycles_all.iterrows()])
+    # Build stock-specific ref_highs — detect stock's own cycles (cached)
+    from backtest import _build_stock_ref_highs
+    full_df = stock_data.copy()
+    full_df['trade_date'] = pd.to_datetime(full_df['trade_date'])
+    full_df = full_df.set_index('trade_date').sort_index()
+    stock_ref_highs_full = _build_stock_ref_highs(full_df, stock_code)
+    if stock_ref_highs_full is None:
+        stock_ref_highs_full = [float(full_df.loc[d, 'close']) if d in full_df.index else 0.0 for d in full_df.index]
+
+    # Map ref_highs to compute_seg dates
     stock_ref_highs = []
-    compute_dates = compute_seg['trade_date']
-    compute_df = compute_seg.set_index('trade_date')
-    for d in compute_dates:
-        rh = None
-        for pd_, _ in cycle_peaks:
-            if pd_ <= d:
-                stock_on_date = compute_df[compute_df.index == pd_]
-                if not stock_on_date.empty:
-                    rh = float(stock_on_date['close'].iloc[0])
-            else:
-                break
-        stock_ref_highs.append(rh if rh is not None else float(compute_seg[compute_seg['trade_date'] == d]['close'].iloc[0]))
+    for d in compute_seg['trade_date']:
+        if d in full_df.index:
+            idx = full_df.index.get_loc(d)
+            stock_ref_highs.append(stock_ref_highs_full[idx])
+        else:
+            stock_ref_highs.append(float(compute_seg[compute_seg['trade_date'] == d]['close'].iloc[0]))
 
     try:
         signals = cfg['func'](compute_seg, **params)

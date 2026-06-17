@@ -7,6 +7,7 @@ import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
 
 # Chinese param name mapping
 _PARAM_CN = {
@@ -395,6 +396,64 @@ def run_and_save_all(data_dfs, signal_window=45):
     return standalone
 
 
+def _build_stock_ref_highs(stock_df, stock_code):
+    """
+    Detect stock's own bull cycles and build date-indexed reference highs.
+    Uses same algorithm as detect_cycles.py. Cycles cached to data/stock_cycles_{code}.csv.
+    Returns list of ref_high values aligned to stock_df.index, or None on failure.
+    """
+    from scipy.signal import argrelextrema
+
+    cache_path = os.path.join(DATA_DIR, f'stock_cycles_{stock_code}.csv')
+    cycle_df = None
+
+    # Try cache
+    if os.path.exists(cache_path):
+        cycle_df = pd.read_csv(cache_path)
+        cycle_df['end_date'] = pd.to_datetime(cycle_df['end_date'])
+
+    # Detect if not cached
+    if cycle_df is None or cycle_df.empty:
+        close = stock_df['close'].values.astype(float)
+        dates = stock_df.index
+        smoothed = pd.Series(close).rolling(20, min_periods=1).mean().values
+        troughs = argrelextrema(smoothed, np.less, order=10)[0]
+        peaks = argrelextrema(smoothed, np.greater, order=10)[0]
+
+        cycles = []
+        for t_idx in troughs:
+            later = peaks[peaks > t_idx]
+            if len(later) == 0: continue
+            p_idx = later[0]
+            dur = int(p_idx - t_idx)
+            if dur < 20: continue
+            chg = (close[p_idx] - close[t_idx]) / close[t_idx] * 100
+            if chg < 25: continue
+            cycles.append({
+                'end_date': dates[p_idx],
+                'end_price': round(float(close[p_idx]), 2),
+                'change_pct': round(chg, 2),
+            })
+
+        if not cycles:
+            return None
+
+        cycle_df = pd.DataFrame(cycles)
+        cycle_df.to_csv(cache_path, index=False)
+
+    # Build ref_highs: for each date, use last cycle's end_price before that date
+    cycle_peaks = sorted([(c['end_date'], c['end_price']) for _, c in cycle_df.iterrows()])
+    ref_highs = []
+    for d in stock_df.index:
+        rh = None
+        for peak_date, peak_price in cycle_peaks:
+            if peak_date <= d: rh = peak_price
+            else: break
+        ref_highs.append(rh if rh is not None else float(stock_df.loc[d, 'close']))
+
+    return ref_highs
+
+
 def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
     """
     Run backtest for a single stock against index-defined market cycles.
@@ -414,24 +473,10 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
     df['trade_date'] = pd.to_datetime(df['trade_date'])
     df = df.set_index('trade_date').sort_index()
 
-    # Build stock-specific ref_highs from cycle end dates
-    cycle_peaks = sorted([(pd.Timestamp(c['end_date']), c['end_price']) for c in cycles_all])
-    stock_ref_highs = []
-    for d in df.index:
-        # Use index cycle end dates, but stock's close as reference
-        rh = None
-        for pd_, _ in cycle_peaks:
-            if pd_ <= d:
-                # Find stock's close on or nearest to the cycle end date
-                stock_on_date = df[df.index == pd_]
-                if not stock_on_date.empty:
-                    rh = float(stock_on_date['close'].iloc[0])
-                elif rh is None:
-                    # Before any cycle: use stock's own close
-                    rh = float(df.loc[d, 'close'])
-            else:
-                break
-        stock_ref_highs.append(rh if rh is not None else float(df.loc[d, 'close']))
+    # Build stock-specific ref_highs from stock's own detected bull cycles
+    stock_ref_highs = _build_stock_ref_highs(df, stock_code)
+    if stock_ref_highs is None:
+        stock_ref_highs = [float(df.loc[d, 'close']) if d in df.index else 0.0 for d in df.index]
 
     rules = get_all_signal_rules()
     results = []
