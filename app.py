@@ -403,31 +403,13 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
         increasing_line_color='red', decreasing_line_color='green',
     ), row=1, col=1)
 
-    # Add MA250 and decline threshold for context (same as Tab 2 cycle detail)
+    # Add MA250 for context (no decline line — stock ref_highs differ from index)
     full_close = compute_seg['close'].values.astype(float)
     ma250 = talib.SMA(full_close, 250)
     ma250_disp = ma250[disp_mask.values]
     fig.add_trace(go.Scatter(
         x=segment['trade_date'], y=ma250_disp,
         name='年线(250)', line=dict(color='orange', width=1),
-        connectgaps=False,
-    ), row=1, col=1)
-
-    cycles_all = pd.read_csv(os.path.join(OUTPUT_DIR, 'cycles.csv'))
-    cycle_peaks = sorted([(pd.Timestamp(c['end_date']), c['end_price']) for _, c in cycles_all.iterrows()])
-    rh = []
-    close_vals = compute_seg['close'].values.astype(float)
-    for i, d in enumerate(compute_seg['trade_date']):
-        ref = None
-        for pd_, pp in cycle_peaks:
-            if pd_ <= d: ref = pp
-            else: break
-        rh.append(ref if ref is not None else close_vals[i])
-    decline_line = np.array(rh) * 0.80
-    decline_disp = decline_line[disp_mask.values]
-    fig.add_trace(go.Scatter(
-        x=segment['trade_date'], y=decline_disp,
-        name='跌20%线', line=dict(color='gray', width=1, dash='dash'),
         connectgaps=False,
     ), row=1, col=1)
 
