@@ -859,6 +859,23 @@ def render_live_tracking():
     # Top indicators from backtest
     top_inds = ['CCI脱离超卖', 'OBV底背离', 'MACD柱线缩短']
 
+    # ---- Usage guide ----
+    with st.expander("📖 买入信号使用指南", expanded=True):
+        st.markdown("""
+        **主买入信号：CCI 脱离超卖**（蓝三角出现在 CCI 栏）
+        - CCI 从 -100 以下回升 → 下跌动量衰减
+        - 必须出现在 **灰色跌15%线之下** → 市场处于超跌状态
+        - 一个蓝三角 = 可以买入
+        
+        **确认信号：OBV 底背离**（蓝三角出现在 OBV 栏）
+        - 价格下跌但 OBV 在涨 → 资金在悄悄进场
+        - CCI 响了 + OBV 也响了 → 加仓
+        
+        **辅助参考：MACD 柱线缩短**（蓝三角出现在 MACD 栏）
+        - 绿柱连续收窄 → 空头力竭
+        - 有最好，没有也不影响决策
+        """)
+
     # ---- Index chart ----
     st.subheader("中证证券公司指数 (399975.SZ)")
     _render_live_chart(st.session_state.index_daily, '399975.SZ', top_inds, is_index=True)
