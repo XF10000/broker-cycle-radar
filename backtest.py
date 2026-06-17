@@ -8,6 +8,26 @@ import numpy as np
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
+# Chinese param name mapping
+_PARAM_CN = {
+    'fast': '快线', 'slow': '慢线', 'signal': '信号线',
+    'lookback': '回溯', 'ma_period': '均线', 'below_days': '线下天数',
+    'period': '周期', 'adx_low': 'ADX阈值',
+    'consecutive': '连续天数', 'contract_window': '缩量窗口',
+    'expand_ratio': '放量倍数', 'max_ratio': '最大倍数',
+    'std': '标准差', 'ndays_newlow': '新低天数',
+    'vol_ratio': '量比', 'flat_days': '横盘天数', 'flat_pct': '振幅',
+    'window': '窗口', 'threshold': '阈值', 'n': 'N', 'm1': 'M1', 'm2': 'M2',
+}
+
+def _param_str(params):
+    """Convert param dict to readable Chinese string."""
+    parts = []
+    for k, v in params.items():
+        cn = _PARAM_CN.get(k, k)
+        parts.append(f'{cn}={v}')
+    return ', '.join(parts)
+
 
 def judge_signal(signal_series, cycle_start, cycle_end, signal_window=30):
     """
@@ -193,7 +213,7 @@ def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
                 '指标名': rule['name'],
                 '类别': rule['category'],
                 '周期': freq_key,
-                '参数': str(rule['params']),
+                '参数': _param_str(rule['params']),
                 '命中率': round(weighted_hr, 3),
                 '命中轮数': f'{hits}/{total_cycles}',
                 '平均提前天': round(avg_days, 1) if avg_days is not None else None,
@@ -348,7 +368,7 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
                 '指标名': rule_name,
                 '类别': '共振',
                 '周期': '周+日',
-                '参数': f'w={w_params}, d={d_params}',
+                '参数': f'周线: {_param_str(w_params)} | 日线: {_param_str(d_params)}',
                 '命中率': round(weighted_hr, 3),
                 '命中轮数': f'{hits}/{total_cycles}',
                 '平均提前天': round(avg_days, 1) if avg_days is not None else None,
