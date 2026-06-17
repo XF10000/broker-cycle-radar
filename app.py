@@ -293,7 +293,18 @@ def render_stock_backtest():
             '得分': best['综合得分'],
         })
     if summary:
-        sm = pd.DataFrame(summary).sort_values('得分', ascending=False)
+        sm = pd.DataFrame(summary)
+        # Sort by Z score if available
+        if st.session_state.odds_df is not None and not st.session_state.odds_df.empty:
+            z_map = {}
+            for _, r in st.session_state.odds_df.iterrows():
+                raw = r['ts_code'].split('.')[0]
+                z_map[raw] = r.get('median_z', -999)
+            sm['_z'] = sm['股票'].apply(
+                lambda x: z_map.get(x.split('(')[-1].rstrip(')'), -999))
+            sm = sm.sort_values('_z', ascending=False).drop(columns=['_z'])
+        else:
+            sm = sm.sort_values('得分', ascending=False)
         st.dataframe(sm, use_container_width=True, hide_index=True)
 
     # Heatmap: stocks × top indicators
