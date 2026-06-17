@@ -1205,19 +1205,27 @@ def render_odds_tab():
     meta = st.session_state.odds_meta
 
     # ---- Top status bar ----
-    col_s1, col_s2, col_s3, col_s4 = st.columns([3, 2, 2, 2])
+    col_s1, col_s2, col_s3, col_s4 = st.columns([2, 2, 2, 2])
     with col_s1:
         st.caption(f"更新至: {st.session_state.odds_data_date}")
     with col_s2:
         st.caption(f"覆盖: {len(df)} 只成分股")
     with col_s3:
-        m_val = meta.get('M', '—')
-        st.caption(f"阈值M: {m_val}（参与≥M轮=可信）")
-    with col_s4:
+        data_m = int(meta.get('M', 7))
         if st.button("刷新数据", key='odds_refresh'):
             st.cache_data.clear()
             load_odds()
             st.rerun()
+
+    # ---- Confidence threshold control ----
+    max_cycles = int(df['cycle_count'].max())
+    user_m = st.slider(
+        "置信度阈值（≥M轮=可信）",
+        min_value=1, max_value=max_cycles,
+        value=int(data_m), key='odds_m_slider',
+        help="低于此值的个股标记为'参考'或'有限'。默认值=M=49只成分股参与轮数的中位数。"
+    )
+    st.caption(f"当前: 可信={len(df[df['cycle_count'] >= user_m])}只, 参考={len(df[(df['cycle_count'] >= 2) & (df['cycle_count'] < user_m)])}只, 有限={len(df[df['cycle_count'] < 2])}只")
 
     # ---- Compute signals ----
     signal_df = compute_odds_signals()
@@ -1241,8 +1249,8 @@ def render_odds_tab():
     display['最大涨幅'] = display['max_return'].apply(lambda x: f'{x:+.1%}')
     display['跑赢概率'] = display['beat_index_rate'].apply(lambda x: f'{x:.0%}')
     display['轮数'] = display['cycle_count']
-    display['置信度'] = display['confidence'].apply(
-        lambda c: '✓ 可信' if c == '可信' else ('⚠ 参考' if c == '参考' else '▷ 有限'))
+    display['置信度'] = display['cycle_count'].apply(
+        lambda n: '✓ 可信' if n >= user_m else ('⚠ 参考' if n >= 2 else '▷ 有限'))
 
     def fmt_signal(code):
         s = signal_map.get(code, 'no_data')
