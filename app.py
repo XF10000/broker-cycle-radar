@@ -65,14 +65,14 @@ init_session()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_all_data_cached():
-    """Load all data with caching. Returns dict."""
+def load_all_data_cached(force_refresh=False):
+    """Load all data with caching. Returns dict. Set force_refresh=True to bypass local CSV cache."""
     from data_fetcher import fetch_index_daily as _fetch_idx, fetch_stock_daily as _fetch_stk
     result = {}
     errors = []
 
     try:
-        result['index_daily'] = _fetch_idx()
+        result['index_daily'] = _fetch_idx(force=force_refresh)
         result['index_weekly'] = daily_to_weekly(result['index_daily'])
     except Exception as e:
         errors.append(f'指数数据: {e}')
@@ -83,7 +83,7 @@ def load_all_data_cached():
     for code in INDEX_CONSTITUENTS:
         ts_code = f'{code}.SH' if code.startswith('6') else f'{code}.SZ'
         try:
-            sd = _fetch_stk(ts_code)
+            sd = _fetch_stk(ts_code, force=force_refresh)
             if not sd.empty:
                 result['stocks_daily'][code] = sd
                 result['stocks_weekly'][code] = daily_to_weekly(sd)
@@ -104,7 +104,7 @@ def load_data(force=False):
     if force:
         st.cache_data.clear()
     with st.spinner('加载数据中...'):
-        data = load_all_data_cached()
+        data = load_all_data_cached(force_refresh=force)
     st.session_state.index_daily = data.get('index_daily')
     st.session_state.index_weekly = data.get('index_weekly')
     st.session_state.stocks_daily = data.get('stocks_daily', {})
