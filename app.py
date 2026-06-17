@@ -756,7 +756,7 @@ def _render_heatmap(results_df, cycles_df):
     fig.update_layout(
         height=max(300, len(y_labels) * 22 + 100),
         margin=dict(l=10, r=10, t=20, b=60),
-        xaxis=dict(side='bottom', tickangle=0),
+        xaxis=dict(type='category', side='bottom', tickangle=0),
         yaxis=dict(autorange='reversed'),
     )
 
