@@ -347,7 +347,7 @@ def render_stock_backtest():
         sel_ind = st.selectbox('选择指标', list(top_inds), key='stock_detail_ind')
 
     if sel_stock and sel_ind and st.session_state.display_cycles is not None:
-        cycles = st.session_state.cycles_df.to_dict('records')
+        cycles = st.session_state.display_cycles.to_dict('records')
         stock_code = df[df['股票名'] == sel_stock].iloc[0]['股票']
         stock_data = st.session_state.stocks_daily.get(stock_code)
         if stock_data is not None:
