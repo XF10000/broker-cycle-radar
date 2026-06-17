@@ -132,13 +132,17 @@ def fetch_index_daily(force=False):
         return _read_csv(path)
 
     pro = _get_pro()
-    # Incremental: if cache exists, only fetch new data
+    # Incremental: if cache exists, only fetch new data if stale (>1 day old)
     if force and os.path.exists(path):
         try:
             existing = pd.read_csv(path)
             existing['trade_date'] = pd.to_datetime(existing['trade_date'])
-            last_date = existing['trade_date'].max().strftime('%Y%m%d')
-            df = pro.index_daily(ts_code=INDEX_CODE, start_date=last_date,
+            last_date = existing['trade_date'].max()
+            # Check if cache is already up to date (within 1 day)
+            if (datetime.now() - last_date).days <= 1:
+                return existing.sort_values('trade_date').reset_index(drop=True)
+            last_date_str = last_date.strftime('%Y%m%d')
+            df = pro.index_daily(ts_code=INDEX_CODE, start_date=last_date_str,
                                  fields='ts_code,trade_date,open,high,low,close,vol,amount')
             if df is not None and not df.empty:
                 df['trade_date'] = pd.to_datetime(df['trade_date'])
@@ -147,8 +151,8 @@ def fetch_index_daily(force=False):
                 combined.to_csv(path, index=False)
                 return combined
         except Exception:
-            pass  # API failed, fall through to full fetch
-        return existing  # API returned nothing new, use cached
+            pass  # API failed, use cached as-is
+        return existing.sort_values('trade_date').reset_index(drop=True)
 
     # Full fetch
     try:
@@ -175,13 +179,16 @@ def fetch_stock_daily(ts_code, force=False):
         return _read_csv(path)
 
     pro = _get_pro()
-    # Incremental: if cache exists, only fetch new data
+    # Incremental: if cache exists, only fetch new data if stale (>1 day old)
     if force and os.path.exists(path):
         try:
             existing = pd.read_csv(path)
             existing['trade_date'] = pd.to_datetime(existing['trade_date'])
-            last_date = existing['trade_date'].max().strftime('%Y%m%d')
-            df = pro.daily(ts_code=ts_code, start_date=last_date,
+            last_date = existing['trade_date'].max()
+            if (datetime.now() - last_date).days <= 1:
+                return existing.sort_values('trade_date').reset_index(drop=True)
+            last_date_str = last_date.strftime('%Y%m%d')
+            df = pro.daily(ts_code=ts_code, start_date=last_date_str,
                            fields='ts_code,trade_date,open,high,low,close,vol,amount')
             if df is not None and not df.empty:
                 df['trade_date'] = pd.to_datetime(df['trade_date'])
@@ -190,8 +197,8 @@ def fetch_stock_daily(ts_code, force=False):
                 combined.to_csv(path, index=False)
                 return combined
         except Exception:
-            pass  # API failed, use cached as-is
-        return existing
+            pass
+        return existing.sort_values('trade_date').reset_index(drop=True)
 
     # Full fetch
     try:
