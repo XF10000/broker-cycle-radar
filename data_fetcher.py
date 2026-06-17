@@ -132,25 +132,37 @@ def fetch_index_daily(force=False):
     pro = _get_pro()
     # Incremental: if cache exists, only fetch new data
     if force and os.path.exists(path):
-        existing = pd.read_csv(path)
-        existing['trade_date'] = pd.to_datetime(existing['trade_date'])
-        last_date = existing['trade_date'].max().strftime('%Y%m%d')
-        df = pro.index_daily(ts_code=INDEX_CODE, start_date=last_date,
-                             fields='ts_code,trade_date,open,high,low,close,vol,amount')
-        if df is not None and not df.empty:
-            df['trade_date'] = pd.to_datetime(df['trade_date'])
-            combined = pd.concat([existing, df], ignore_index=True)
-            combined = combined.drop_duplicates(subset=['trade_date']).sort_values('trade_date').reset_index(drop=True)
-            combined.to_csv(path, index=False)
-            return combined
+        try:
+            existing = pd.read_csv(path)
+            existing['trade_date'] = pd.to_datetime(existing['trade_date'])
+            last_date = existing['trade_date'].max().strftime('%Y%m%d')
+            df = pro.index_daily(ts_code=INDEX_CODE, start_date=last_date,
+                                 fields='ts_code,trade_date,open,high,low,close,vol,amount')
+            if df is not None and not df.empty:
+                df['trade_date'] = pd.to_datetime(df['trade_date'])
+                combined = pd.concat([existing, df], ignore_index=True)
+                combined = combined.drop_duplicates(subset=['trade_date']).sort_values('trade_date').reset_index(drop=True)
+                combined.to_csv(path, index=False)
+                return combined
+        except Exception:
+            pass  # API failed, fall through to full fetch
+        return existing  # API returned nothing new, use cached
 
     # Full fetch
-    df = pro.index_daily(ts_code=INDEX_CODE, start_date='20080101',
-                         fields='ts_code,trade_date,open,high,low,close,vol,amount')
-    df['trade_date'] = pd.to_datetime(df['trade_date'])
-    df = df.sort_values('trade_date').reset_index(drop=True)
-    df.to_csv(path, index=False)
-    return df
+    try:
+        df = pro.index_daily(ts_code=INDEX_CODE, start_date='20080101',
+                             fields='ts_code,trade_date,open,high,low,close,vol,amount')
+        df['trade_date'] = pd.to_datetime(df['trade_date'])
+        df = df.sort_values('trade_date').reset_index(drop=True)
+        df.to_csv(path, index=False)
+        return df
+    except Exception:
+        # Fallback: return cached if available
+        if os.path.exists(path):
+            existing = pd.read_csv(path)
+            existing['trade_date'] = pd.to_datetime(existing['trade_date'])
+            return existing
+        return pd.DataFrame()
 
 
 def fetch_stock_daily(ts_code, force=False):
@@ -163,27 +175,33 @@ def fetch_stock_daily(ts_code, force=False):
     pro = _get_pro()
     # Incremental: if cache exists, only fetch new data
     if force and os.path.exists(path):
-        existing = pd.read_csv(path)
-        existing['trade_date'] = pd.to_datetime(existing['trade_date'])
-        last_date = existing['trade_date'].max().strftime('%Y%m%d')
-        df = pro.daily(ts_code=ts_code, start_date=last_date,
-                       fields='ts_code,trade_date,open,high,low,close,vol,amount')
-        if df is not None and not df.empty:
-            df['trade_date'] = pd.to_datetime(df['trade_date'])
-            combined = pd.concat([existing, df], ignore_index=True)
-            combined = combined.drop_duplicates(subset=['trade_date']).sort_values('trade_date').reset_index(drop=True)
-            combined.to_csv(path, index=False)
-            return combined
+        try:
+            existing = pd.read_csv(path)
+            existing['trade_date'] = pd.to_datetime(existing['trade_date'])
+            last_date = existing['trade_date'].max().strftime('%Y%m%d')
+            df = pro.daily(ts_code=ts_code, start_date=last_date,
+                           fields='ts_code,trade_date,open,high,low,close,vol,amount')
+            if df is not None and not df.empty:
+                df['trade_date'] = pd.to_datetime(df['trade_date'])
+                combined = pd.concat([existing, df], ignore_index=True)
+                combined = combined.drop_duplicates(subset=['trade_date']).sort_values('trade_date').reset_index(drop=True)
+                combined.to_csv(path, index=False)
+                return combined
+        except Exception:
+            pass  # API failed, use cached as-is
         return existing
 
     # Full fetch
-    df = pro.daily(ts_code=ts_code, start_date='20080101',
-                   fields='ts_code,trade_date,open,high,low,close,vol,amount')
-    if df is not None and not df.empty:
-        df['trade_date'] = pd.to_datetime(df['trade_date'])
-        df = df.sort_values('trade_date').reset_index(drop=True)
-        df.to_csv(path, index=False)
-        return df
+    try:
+        df = pro.daily(ts_code=ts_code, start_date='20080101',
+                       fields='ts_code,trade_date,open,high,low,close,vol,amount')
+        if df is not None and not df.empty:
+            df['trade_date'] = pd.to_datetime(df['trade_date'])
+            df = df.sort_values('trade_date').reset_index(drop=True)
+            df.to_csv(path, index=False)
+            return df
+    except Exception:
+        pass
     return pd.DataFrame()
 
 
