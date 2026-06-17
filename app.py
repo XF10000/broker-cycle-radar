@@ -819,10 +819,13 @@ def _render_heatmap(results_df, cycles_df):
                     end = pd.Timestamp(cycle['end_date'])
                     j = judge_signal(resonance_sig, start, end, signal_window=st.session_state.signal_window)
                     if j['hit']:
-                        z_row.append(2 if j['days_before'] > 15 else 3)
+                        z_row.append(3 if j['days_before'] <= 15 else 2)
                         t_row.append(f"共振命中 提前{j['days_before']}天")
                     elif j['late']:
-                        z_row.append(1); t_row.append('太晚')
+                        sd = j['signal_date']
+                        days_after = (sd - start).days
+                        z_row.append(1 if days_after <= 5 else 0.5)
+                        t_row.append(f"晚了{days_after}天")
                     else:
                         z_row.append(0); t_row.append('错过')
 
@@ -892,7 +895,10 @@ def _render_heatmap(results_df, cycles_df):
                     z_row.append(3 if days <= 15 else 2)
                     t_row.append(f"命中 提前{days}天")
                 elif j['late']:
-                    z_row.append(1); t_row.append('太晚')
+                    sd = j['signal_date']
+                    days_after = (sd - start).days
+                    z_row.append(1 if days_after <= 5 else 0.5)
+                    t_row.append(f"晚了{days_after}天")
                 else:
                     z_row.append(0); t_row.append('错过')
 
@@ -906,10 +912,11 @@ def _render_heatmap(results_df, cycles_df):
     x_labels = [f"{c['start_date'][:10]}\n+{c['change_pct']}%" for c in cycles]
 
     colorscale = [
-        [0.0, '#ef5350'],
-        [0.33, '#ffb74d'],
-        [0.66, '#a5d6a7'],
-        [1.0, '#2e7d32'],
+        [0.0, '#9e9e9e'],    # 0: 错过 (gray)
+        [0.2, '#e6a817'],    # 0.5: 晚>5天 (dark yellow)
+        [0.4, '#fff176'],    # 1: 晚≤5天 (light yellow)
+        [0.7, '#a5d6a7'],    # 2: 命中 >15天前 (light green)
+        [1.0, '#2e7d32'],    # 3: 命中 ≤15天前 (dark green)
     ]
 
     fig = go.Figure(data=go.Heatmap(
