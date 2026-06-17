@@ -1193,6 +1193,187 @@ def _render_signal_summary(top_inds):
         st.info("暂无信号数据")
 
 
+def render_odds_tab():
+    """Tab 5: 优选赔率 — Stock odds screening and ranking."""
+    st.header("优选赔率")
+
+    if st.session_state.odds_df is None or st.session_state.odds_df.empty:
+        st.warning("未找到赔率数据。请先在终端运行: python screener.py --init")
+        return
+
+    df = st.session_state.odds_df.copy()
+    meta = st.session_state.odds_meta
+
+    # ---- Top status bar ----
+    col_s1, col_s2, col_s3, col_s4 = st.columns([3, 2, 2, 2])
+    with col_s1:
+        st.caption(f"更新至: {st.session_state.odds_data_date}")
+    with col_s2:
+        st.caption(f"覆盖: {len(df)} 只成分股")
+    with col_s3:
+        m_val = meta.get('M', '—')
+        st.caption(f"阈值M: {m_val}（参与≥M轮=可信）")
+    with col_s4:
+        if st.button("刷新数据", key='odds_refresh'):
+            st.cache_data.clear()
+            load_odds()
+            st.rerun()
+
+    # ---- Compute signals ----
+    signal_df = compute_odds_signals()
+    signal_map = {}
+    if not signal_df.empty:
+        signal_map = dict(zip(signal_df['ts_code'], signal_df['signal']))
+
+    # ---- Main ranking table ----
+    st.subheader("券商个股赔率排名")
+    st.caption("按中位数Z降序排列，点击列头可切换排序。▲ 买点 = 当前触发信号，○ = 无信号")
+
+    display = df[['ts_code', 'name', 'median_z', 'max_z', 'positive_z_rate',
+                   'median_return', 'max_return', 'beat_index_rate',
+                   'confidence', 'cycle_count']].copy()
+
+    display['#'] = range(1, len(display) + 1)
+    display['中位数Z'] = display['median_z'].apply(lambda x: f'{x:+.2f}')
+    display['Z最高值'] = display['max_z'].apply(lambda x: f'{x:+.2f}')
+    display['Z正值率'] = display['positive_z_rate'].apply(lambda x: f'{x:.0%}')
+    display['中位涨幅'] = display['median_return'].apply(lambda x: f'{x:+.1%}')
+    display['最大涨幅'] = display['max_return'].apply(lambda x: f'{x:+.1%}')
+    display['跑赢概率'] = display['beat_index_rate'].apply(lambda x: f'{x:.0%}')
+    display['轮数'] = display['cycle_count']
+    display['置信度'] = display['confidence'].apply(
+        lambda c: '✓ 可信' if c == '可信' else ('⚠ 参考' if c == '参考' else '▷ 有限'))
+
+    def fmt_signal(code):
+        s = signal_map.get(code, 'no_data')
+        if s == 'buy':
+            return '▲ 买点'
+        elif s == 'no_data':
+            return '—'
+        return '○ 无'
+    display['信号'] = display['ts_code'].apply(fmt_signal)
+
+    display = display.sort_values('median_z', ascending=False).reset_index(drop=True)
+
+    show_cols = ['#', 'name', '中位数Z', 'Z最高值', 'Z正值率', '中位涨幅',
+                 '最大涨幅', '跑赢概率', '置信度', '轮数', '信号']
+
+    st.dataframe(
+        display[show_cols].rename(columns={'name': '名称'}),
+        use_container_width=True,
+        hide_index=True,
+        height=min(35 * len(display) + 38, 600),
+    )
+
+    # ---- Auxiliary charts ----
+    st.divider()
+    col_ch1, col_ch2 = st.columns(2)
+
+    with col_ch1:
+        st.subheader("中位数Z评分")
+        _render_z_bar(display)
+
+    with col_ch2:
+        st.subheader(f"中位涨幅%（共同窗口最近{meta.get('N', '—')}轮）")
+        _render_return_bar(display)
+
+    # ---- Expandable detail ----
+    st.divider()
+    st.subheader("个股周期明细")
+    sel_name = st.selectbox(
+        '选择个股查看逐轮明细',
+        display['name'].tolist(),
+        key='odds_detail'
+    )
+    if sel_name:
+        sel_row = display[display['name'] == sel_name].iloc[0]
+        _render_odds_detail(sel_row['ts_code'], sel_name)
+
+
+def _render_z_bar(display_df):
+    """Bar chart of median Z scores."""
+    df = display_df.head(20).copy()
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df['name'].tolist(),
+        y=df['median_z'].tolist(),
+        marker_color=['#22c55e' if v > 0 else '#f87171' for v in df['median_z']],
+    ))
+    fig.update_layout(
+        height=350, showlegend=False,
+        margin=dict(l=10, r=10, t=10, b=80),
+    )
+    fig.update_xaxes(tickangle=-45)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_return_bar(display_df):
+    """Bar chart of median returns."""
+    df = display_df.head(20).copy()
+    fig = go.Figure()
+    rets = [v * 100 for v in df['median_return'].tolist()]
+    fig.add_trace(go.Bar(
+        x=df['name'].tolist(),
+        y=rets,
+        marker_color=['#22c55e' if v > 0 else '#f87171' for v in rets],
+    ))
+    fig.update_layout(
+        height=350, showlegend=False,
+        yaxis_title='涨幅 %',
+        margin=dict(l=10, r=10, t=10, b=80),
+    )
+    fig.update_xaxes(tickangle=-45)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_odds_detail(ts_code, name):
+    """Show per-cycle detail table for a selected stock."""
+    cycles_path = os.path.join(OUTPUT_DIR, 'cycles.csv')
+    if not os.path.exists(cycles_path):
+        st.info("未找到周期数据文件")
+        return
+    cycles = pd.read_csv(cycles_path)
+    cycles['start_date'] = pd.to_datetime(cycles['start_date'])
+    cycles['end_date'] = pd.to_datetime(cycles['end_date'])
+    cycles = cycles[cycles['start_date'] >= pd.Timestamp('2010-01-01')]
+
+    code = ts_code.split('.')[0]
+    stock_path = os.path.join(DATA_DIR, f'stock_daily_{code}.csv')
+    if not os.path.exists(stock_path):
+        st.info("该个股无本地数据")
+        return
+
+    sdf = pd.read_csv(stock_path)
+    sdf['trade_date'] = pd.to_datetime(sdf['trade_date'])
+    sdf = sdf.sort_values('trade_date').reset_index(drop=True)
+
+    idx_path = os.path.join(DATA_DIR, 'index_daily.csv')
+    idf = pd.read_csv(idx_path)
+    idf['trade_date'] = pd.to_datetime(idf['trade_date'])
+
+    records = []
+    for i, (_, cycle) in enumerate(cycles.iterrows()):
+        smask = (sdf['trade_date'] >= cycle['start_date']) & (sdf['trade_date'] <= cycle['end_date'])
+        imask = (idf['trade_date'] >= cycle['start_date']) & (idf['trade_date'] <= cycle['end_date'])
+        sseg = sdf[smask]
+        iseg = idf[imask]
+        if sseg.empty or iseg.empty or len(sseg) < 3:
+            continue
+        s_ret = float(sseg['close'].max()) / float(sseg['close'].iloc[0]) - 1
+        i_ret = float(iseg['close'].max()) / float(iseg['close'].iloc[0]) - 1
+        records.append({
+            '周期': f"#{i+1} ({cycle['start_date'].strftime('%Y-%m')})",
+            '起始': cycle['start_date'].strftime('%Y-%m-%d'),
+            '结束': cycle['end_date'].strftime('%Y-%m-%d'),
+            '板块涨幅': f'{i_ret:+.1%}',
+            '个股涨幅': f'{s_ret:+.1%}',
+            '跑赢': '✓' if s_ret > i_ret else '',
+        })
+
+    if records:
+        st.dataframe(pd.DataFrame(records), use_container_width=True, hide_index=True)
+    else:
+        st.info("该个股未参与任何2010年后周期")
 
 
 def main():
@@ -1203,11 +1384,12 @@ def main():
 
     load_odds()
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📈 行情周期总览",
         "🏆 指标回测排行榜",
         "📊 个股回测对比",
         "🔍 行情跟踪",
+        "💰 优选赔率",
     ])
 
     with tab1:
@@ -1221,6 +1403,9 @@ def main():
 
     with tab4:
         render_live_tracking()
+
+    with tab5:
+        render_odds_tab()
 
     st.divider()
     st.caption("⚠️ 本工具仅提供技术指标信号分析，不构成投资建议。历史回测结果不代表未来表现。")
