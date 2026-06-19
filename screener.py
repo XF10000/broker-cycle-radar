@@ -52,6 +52,10 @@ def compute_cycle_return(seg, cycle_start, cycle_end):
     """
     Compute max return within a cycle window for a given DataFrame segment.
     Returns float (e.g. 0.37 = +37%) or None if data insufficient.
+
+    注意：这里用区间内 close 的【最大值】而非结束价，衡量的是该轮周期内
+    个股的"弹性/最高可达收益"而非"持有至结束的收益"。早期冲高回落的个股
+    会被记为高收益。这是有意的"弹性评估"设计选择，用于横向比较领涨强度。
     """
     # seg should be a DataFrame filtered to [cycle_start, cycle_end]
     if seg.empty or len(seg) < 3:

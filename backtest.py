@@ -483,6 +483,11 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
     # Build stock-specific ref_highs from stock's own detected bull cycles
     stock_ref_highs = _build_stock_ref_highs(df, stock_code)
     if stock_ref_highs is None:
+        # Fallback: 该股无法检测到任何周期（涨幅不达标或数据太短）。
+        # 用当天收盘价作 ref_high → decline≈0% → filter_signals 的"跌幅>阈值"条件
+        # 恒不成立 → 信号基本不被周期过滤（仅受 MA/context 冷却约束）。
+        # 这会导致此类股票发出更多信号，回测命中率通常偏低。属有意兜底，
+        # 保证无周期股仍能进入回测而非被静默丢弃。
         stock_ref_highs = [float(df.loc[d, 'close']) if d in df.index else 0.0 for d in df.index]
 
     rules = get_all_signal_rules()

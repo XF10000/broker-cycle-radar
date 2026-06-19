@@ -294,10 +294,12 @@ def bollinger_lower_rebound(df, period=20, std=2):
     upper, middle, lower = talib.BBANDS(close, timeperiod=period, nbdevup=std, nbdevdn=std)
 
     sig = pd.Series(False, index=df.index)
-    for i in range(period, len(df)):
+    # 起点设为 period+3：确保 low/lower 的 4 元素窗口 [i-3, i] 内 lower 全部有效
+    # (BBANDS 前 period-1 个值为 NaN)，避免 nanmax 在边界处退化为单点比较
+    for i in range(period + 3, len(df)):
         if np.isnan(middle[i]) or np.isnan(lower[i]):
             continue
-        near_lower = low[i-3:i+1].min() <= np.nanmax(lower[i-3:i+1])
+        near_lower = low[i-3:i+1].min() <= lower[i-3:i+1].max()
         if (close[i-1] < middle[i-1] and close[i] > middle[i] and near_lower):
             sig.iloc[i] = True
     return sig
@@ -520,7 +522,7 @@ def filter_signals(df, signal_series, ma_period=250, decline_pct=20, cooldown=15
         if context_ok[i]:
             last_context_idx = i
         if i in signal_set:
-            if i >= n or np.isnan(ma[i]):
+            if np.isnan(ma[i]):
                 filtered.iloc[i] = False
             elif i - last_context_idx > state_window:
                 filtered.iloc[i] = False

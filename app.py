@@ -97,16 +97,44 @@ def load_data(force=False):
         st.cache_data.clear()
     with st.spinner('加载数据中...'):
         data = load_all_data_cached(force_refresh=force)
-    st.session_state.index_daily = data.get('index_daily')
+
+    index_daily = data.get('index_daily')
+    # 指数数据是后续一切分析的基础：失败则不标记 data_loaded，避免在不完整数据上跑回测
+    if index_daily is None or index_daily.empty:
+        st.session_state.data_loaded = False
+        st.session_state.index_daily = None
+        st.session_state.index_weekly = None
+        st.session_state.stocks_daily = {}
+        st.session_state.stocks_weekly = {}
+        st.session_state.last_data_date = ''
+        st.session_state.data_error = '指数数据加载失败：' + '; '.join(data.get('errors', [])) or '未知错误'
+        return
+
+    st.session_state.index_daily = index_daily
     st.session_state.index_weekly = data.get('index_weekly')
     st.session_state.stocks_daily = data.get('stocks_daily', {})
     st.session_state.stocks_weekly = data.get('stocks_weekly', {})
+    st.session_state.last_data_date = str(index_daily['trade_date'].max().date())
+
+    # 个股部分失败：分类汇总，醒目提示
+    errors = data.get('errors', [])
+    stock_errors = [e for e in errors if e.startswith('个股')]
+    other_errors = [e for e in errors if not e.startswith('个股')]
+    total = len(INDEX_CONSTITUENTS)
+    failed = len(stock_errors)
+    if failed == 0 and not other_errors:
+        st.session_state.data_error = ''
+    else:
+        parts = []
+        if other_errors:
+            parts.append('; '.join(other_errors))
+        if failed > 0:
+            ratio = failed / total if total else 0
+            tag = '⚠️ 部分失败' if ratio < 0.3 else '❌ 大量失败'
+            parts.append(f'{tag}: {failed}/{total} 只个股加载失败，回测将在剩余个股上运行')
+        st.session_state.data_error = ' | '.join(parts)
+
     st.session_state.data_loaded = True
-    st.session_state.data_error = '; '.join(data.get('errors', []))
-    if st.session_state.index_daily is not None:
-        st.session_state.last_data_date = str(
-            st.session_state.index_daily['trade_date'].max().date()
-        )
 
 
 def load_cycles():
@@ -479,8 +507,11 @@ def _build_ref_for_df(df, cycles_df=None):
         return None
     cycle_peaks = sorted([(pd.Timestamp(r['end_date']), r['end_price']) for _, r in cycles_df.iterrows()])
     close = df['close'].values.astype(float)
+    # 统一取日期序列：兼容 trade_date 为列或为 DatetimeIndex 两种情况
+    dates = df['trade_date'] if 'trade_date' in df.columns else df.index
+    last_peak_date = cycle_peaks[-1][0]
     rh = []
-    for i, d in enumerate(df['trade_date'] if 'trade_date' in df.columns else df.index):
+    for i, d in enumerate(dates):
         ref = None
         for pd_, pp in cycle_peaks:
             if pd_ <= d: ref = pp
@@ -488,8 +519,8 @@ def _build_ref_for_df(df, cycles_df=None):
         # After last cycle: use max close since last cycle end
         if ref is None:
             ref = close[i]
-        elif d > cycle_peaks[-1][0]:
-            since = close[(df['trade_date'] > cycle_peaks[-1][0]) & (df['trade_date'] <= d)]
+        elif d > last_peak_date:
+            since = close[(dates > last_peak_date) & (dates <= d)]
             since_max = since.max() if len(since) > 0 else ref
             ref = max(ref, since_max)
         rh.append(ref)
@@ -520,7 +551,11 @@ def render_sidebar():
 
     st.sidebar.subheader("数据状态")
     if st.session_state.data_loaded and st.session_state.index_daily is not None:
-        st.sidebar.success(f"已加载 | 最新: {st.session_state.last_data_date}")
+        total = len(INDEX_CONSTITUENTS)
+        loaded = len(st.session_state.stocks_daily)
+        st.sidebar.success(f"已加载 | 最新: {st.session_state.last_data_date} | 个股 {loaded}/{total}")
+    elif st.session_state.data_error and not st.session_state.data_loaded:
+        st.sidebar.error("数据加载失败")
     else:
         st.sidebar.warning("数据未加载")
 
@@ -1296,6 +1331,7 @@ def _render_signal_summary(top_inds):
             z_map[raw] = float(z)
 
     rows = []
+    from backtest import _build_stock_ref_highs
     for code, df in st.session_state.stocks_daily.items():
         name = INDEX_CONSTITUENTS.get(code, code)
         z_val = z_map.get(code, -999)
@@ -1303,6 +1339,13 @@ def _render_signal_summary(top_inds):
         df['trade_date'] = pd.to_datetime(df['trade_date'])
         df = df.sort_values('trade_date')
         recent_cutoff = df['trade_date'].max() - pd.Timedelta(days=90)
+
+        # 与回测口径一致：用个股自身周期高点构建 ref_highs，避免信号汇总与回测过滤不一致
+        df_indexed = df.set_index('trade_date')
+        try:
+            stock_ref_highs = _build_stock_ref_highs(df_indexed, code)
+        except Exception:
+            stock_ref_highs = None
 
         sig_count = 0
         sig_names = []
@@ -1313,7 +1356,7 @@ def _render_signal_summary(top_inds):
                 continue
             try:
                 sig = cfg['func'](df, **cfg['params'][0])
-                sig = filter_signals(df, sig)
+                sig = filter_signals(df, sig, ref_highs=stock_ref_highs)
             except Exception:
                 continue
             recent = (df['trade_date'] >= recent_cutoff).values
