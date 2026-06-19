@@ -263,16 +263,71 @@ def _is_fresh(path, max_hours=12):
     return (datetime.now() - mtime).total_seconds() < max_hours * 3600
 
 
+# ---------------------------------------------------------------------------
+# Holiday / trading-day helpers
+# 外部接口: https://api.haoshenqi.top/holiday?date=YYYY-MM-DD
+# status: 0 普通工作日 / 1 周末双休 / 2 需要补班的工作日 / 3 法定节假日
+# A 股规则：周末一律不交易（即使国家调休补班），仅 status==0 为交易日。
+# ---------------------------------------------------------------------------
+
+_HOLIDAY_API = "http://api.haoshenqi.top/holiday"
+_holiday_cache = {}  # date_str('YYYY-MM-DD') -> status(int) or None；进程内按天缓存
+
+
+def _fetch_holiday_status(date_str):
+    """查询某天 status。带进程内缓存（同一 date_str 只请求一次）；失败返回 None。
+    按天缓存一次：节假日本身不会变，进程内缓存即可；进程重启会重新请求一次。
+    """
+    if date_str in _holiday_cache:
+        return _holiday_cache[date_str]
+    status = None
+    try:
+        import requests
+        r = requests.get(_HOLIDAY_API, params={"date": date_str},
+                         headers={"content-type": "application/json"},
+                         timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if data:
+                status = data[0].get("status")
+    except Exception:
+        status = None
+    _holiday_cache[date_str] = status
+    return status
+
+
+def is_trading_day(date=None):
+    """判断某天是否为 A 股交易日。
+    date: datetime / date / str('YYYYMMDD' 或 'YYYY-MM-DD') / None(=今天)
+    A 股交易日规则：仅 status==0（普通工作日）为交易日；
+    周末（含补班日 status=2）与法定节假日（status=3）一律非交易日。
+    API 失败退回 weekday() 判定，保证不比原逻辑更差。
+    """
+    if date is None:
+        d = datetime.now().date()
+    elif isinstance(date, datetime):
+        d = date.date()
+    elif isinstance(date, str):
+        d = datetime.strptime(date.replace("-", ""), "%Y%m%d").date()
+    else:
+        d = date  # datetime.date
+    status = _fetch_holiday_status(d.strftime("%Y-%m-%d"))
+    if status is None:
+        return d.weekday() < 5      # fallback：周一~周五视为交易日
+    return status == 0              # 仅普通工作日为交易日；周末补班也算非交易日
+
+
 def _needs_eod_update(path):
-    """盘后更新检查：工作日 15:00 后，缓存最新数据日期 < 今天 → True。
+    """盘后更新检查：交易日 15:00 后，缓存最新数据日期 < 今天 → True。
     用于 force=False 时绕过 mtime 新鲜度判定，触发增量拉取当天收盘新数据。
+    交易日判定优先走节假日 API（含周末补班/法定节假日），失败退回 weekday()。
     """
     if not os.path.exists(path):
         return False
     now = datetime.now()
-    if now.hour < 15:           # 盘中不触发
+    if now.hour < 15:               # 盘中不触发
         return False
-    if now.weekday() >= 5:      # 周末不触发（非交易日）
+    if not is_trading_day(now):     # 非交易日（法定节假日/周末，不含补班）不触发
         return False
     try:
         df = pd.read_csv(path)
