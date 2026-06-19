@@ -9,7 +9,8 @@
 - **49 只成分股赔率排名**：每轮周期个股弹性 Z 分评估，排出历史上谁涨得多
 - **实时信号检测**：Top 3 指标（CCI脱离超卖、OBV底背离、MACD柱线缩短）当天信号扫描，趋势上下文过滤
 - **信号 × 赔率交叉筛选**：星级信号评级 + 一键筛选，直接找出"高赔率 + 已触发"的标的
-- **Streamlit 交互界面**：5 个 Tab，K 线图 + 指标叠加 + 热力图 + 排名表
+- **领涨/滞涨节奏分析**：每轮行情启动后前 N 个交易日涨幅排序，检验"谁先涨"是否跨周期稳定，当前轮次实况对照
+- **Streamlit 交互界面**：6 个 Tab，K 线图 + 指标叠加 + 热力图 + 排名表
 
 ## 快速开始
 
@@ -36,8 +37,9 @@ streamlit run app.py
 | `indicators.py` | 14 种技术指标计算 |
 | `backtest.py` | 回测引擎 |
 | `screener.py` | 个股赔率 Z 分筛选 |
-| `data_fetcher.py` | Tushare 数据拉取 + 缓存 |
+| `data_fetcher.py` | AKShare 主 + tushare 备双源数据拉取 + 节假日 API 交易日判定 + 缓存 |
 | `detect_cycles.py` | 行情周期检测 |
+| `lead_lag.py` | 领涨/滞涨节奏分析（跨周期涨幅排序稳定性） |
 | `data/` | 本地数据缓存（已 gitignore） |
 | `output/` | 回测结果 + 赔率排名（已 gitignore） |
 
@@ -47,11 +49,14 @@ streamlit run app.py
 2. **点击「重新回测」** → 跑全部指标 × 参数组合的批量回测
 3. **Tab 4 行情跟踪** → 看当前信号状态，找到有 ★ 的股票
 4. **Tab 5 优选赔率** → 勾选「仅显示有信号」，排名前两名即你的候选
+5. **Tab 6 领涨/滞涨分析** → 看当前轮次谁先涨，对照历史规律判断节奏
 
 ## 依赖
 
 - Python 3.10+
-- Tushare Pro（需 2000+ 积分）
+- AKShare（主数据源，A股行情）
+- Tushare Pro（备数据源，需 2000+ 积分）
+- requests（节假日 API 调用）
 - TA-Lib（需要系统级安装，macOS 用 `brew install ta-lib`）
 
 ## 免责声明

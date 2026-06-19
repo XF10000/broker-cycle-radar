@@ -22,6 +22,7 @@ from data_fetcher import (
 )
 from indicators import get_all_signal_rules, INDICATOR_REGISTRY, filter_signals, get_indicator_lines
 from backtest import run_backtest, run_and_save, run_and_save_all, judge_signal, count_false_signals, run_all_stocks_backtest
+from lead_lag import compute_lead_lag, analyze_consistency, compute_current_returns, detect_recent_low
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
@@ -1623,6 +1624,398 @@ def _render_odds_detail(ts_code, name):
         st.info("该个股未参与任何2010年后周期")
 
 
+def render_lead_lag_tab():
+    """Tab 6: 领涨/滞涨节奏分析 — 历史规律 + 当前轮次实况."""
+    st.header("领涨/滞涨节奏分析")
+    st.caption('每轮行情启动后前 N 个交易日的涨幅排序，检验"谁先涨"是否跨周期稳定')
+
+    # ============ 当前轮次实况 ============
+    st.subheader("📍 当前轮次实况")
+    st.caption("从本轮起点至今，哪些个股已经领涨、哪些还没动。与下方历史规律对照看。")
+
+    # Auto-detect recent low as default
+    default_start = None
+    if st.session_state.index_daily is not None:
+        idx_df = st.session_state.index_daily.copy()
+        idx_df['trade_date'] = pd.to_datetime(idx_df['trade_date'])
+        idx_df = idx_df.sort_values('trade_date')
+        default_start = detect_recent_low(idx_df)
+
+    col_d1, col_d2, col_d3 = st.columns([2, 1, 1])
+    with col_d1:
+        start_date = st.date_input(
+            "本轮起点（板块基准）",
+            value=default_start.date() if default_start is not None else pd.Timestamp('2026-06-09').date(),
+            key='lead_lag_start',
+            help="默认自动检测板块最近低点。个股涨幅计算方式见下方选项"
+        )
+    with col_d2:
+        show_hist_tag = st.checkbox("标注历史档位", value=True,
+                                    help="在表格中显示该股历史平均档位（1=常先涨，3=常后涨）")
+    with col_d3:
+        show_odds = st.checkbox("标注赔率Z分", value=True,
+                                help="显示历史弹性 Z 评分（来了能涨多少）")
+
+    use_stock_low = st.radio(
+        "个股涨幅计算方式",
+        ["以各自最近低点为起点", "以板块起点统一计算"],
+        index=0,
+        horizontal=True,
+        help="个股低点≠板块低点。如中信建投4月7日见底，板块6月9日才见底。用统一起点会严重低估先见底个股的涨幅"
+    ) == "以各自最近低点为起点"
+
+    st.metric("板块最新日期", st.session_state.get('last_data_date', '—'))
+
+    if st.session_state.index_daily is not None and start_date:
+        # Index return for reference
+        idx_df = st.session_state.index_daily.copy()
+        idx_df['trade_date'] = pd.to_datetime(idx_df['trade_date'])
+        idx_df = idx_df.sort_values('trade_date')
+        idx_seg = idx_df[idx_df['trade_date'] >= pd.Timestamp(start_date)]
+        if not idx_seg.empty:
+            idx_ret = (float(idx_seg['close'].iloc[-1]) / float(idx_seg['close'].iloc[0]) - 1) * 100
+            st.info(f"板块指数 399975.SZ：{start_date} 起 {idx_ret:+.1f}%")
+
+    # Compute current returns (with history + odds annotation)
+    stab_for_annot = None
+    if show_hist_tag:
+        with st.spinner('计算历史档位...'):
+            _detail = compute_lead_lag(window_days=20, use_stock_low=True)
+            if not _detail.empty:
+                _analysis = analyze_consistency(_detail)
+                stab_for_annot = _analysis.get('stock_stability')
+
+    odds_for_annot = None
+    if show_odds and st.session_state.odds_df is not None:
+        odds_for_annot = st.session_state.odds_df
+
+    with st.spinner('计算当前个股涨幅...'):
+        current_df = compute_current_returns(
+            start_date=start_date, stability_df=stab_for_annot, odds_df=odds_for_annot,
+            use_stock_low=use_stock_low,
+        )
+
+    if current_df.empty:
+        st.warning("无数据，请先加载数据")
+    else:
+        # ---- Bar chart: all stocks sorted by return ----
+        cd = current_df.copy()
+        fig = go.Figure()
+        colors = ['#22c55e' if v > 0 else '#f87171' for v in cd['return_from_start']]
+        fig.add_trace(go.Bar(
+            x=cd['name'], y=cd['return_from_start'],
+            marker_color=colors, text=cd['return_from_start'].round(1),
+            texttemplate='%{text:.1f}%', textposition='outside',
+            textfont=dict(size=9),
+        ))
+        # Add index return as horizontal line
+        if not idx_seg.empty:
+            fig.add_hline(y=idx_ret, line_dash='dash', line_color='blue',
+                          annotation_text=f'板块 {idx_ret:+.1f}%')
+        fig.update_layout(
+            height=max(350, len(cd) * 14 + 80),
+            margin=dict(l=10, r=10, t=10, b=120),
+            yaxis_title='涨幅 %',
+            showlegend=False,
+        )
+        fig.update_xaxes(tickangle=-60, tickfont=dict(size=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ---- Detail table ----
+        display = cd.copy()
+        display['#'] = range(1, len(display) + 1)
+        display['涨幅'] = display['return_from_start'].apply(lambda x: f'{x:+.1f}%')
+        display['从低点'] = display['return_from_low'].apply(lambda x: f'{x:+.1f}%')
+        display['状态'] = display['return_from_start'].apply(
+            lambda x: '🔴 已领涨' if x > idx_ret * 1.5 else
+                      ('🟡 跟涨' if x > idx_ret * 0.5 else
+                       ('⚪ 滞涨' if x >= 0 else '🟢 仍跌'))
+        )
+        show_cols = ['#', 'name', 'code', 'start_date', '涨幅', '从低点', '状态', 'current_price']
+        col_rename = {'name': '名称', 'code': '代码', 'start_date': '起点',
+                      'current_price': '现价', 'current_date': '数据日期'}
+        if show_hist_tag and 'hist_mean_tier' in display.columns:
+            display['历史档位'] = display['hist_mean_tier'].apply(
+                lambda x: f'{x:.1f}' if pd.notna(x) else '—')
+            display['历史先涨率'] = display['hist_lead_rate'].apply(
+                lambda x: f'{x:.0%}' if pd.notna(x) and x > 0 else '—')
+            show_cols += ['历史档位', '历史先涨率']
+        if show_odds and 'odds_z' in display.columns:
+            display['赔率Z'] = display['odds_z'].apply(
+                lambda x: f'{x:+.2f}' if pd.notna(x) else '—')
+            display['跑赢率'] = display['odds_beat_rate'].apply(
+                lambda x: f'{x:.0%}' if pd.notna(x) else '—')
+            show_cols += ['赔率Z', '跑赢率']
+
+        # ---- Opportunity filter ----
+        if show_hist_tag and show_odds and 'odds_z' in display.columns:
+            st.divider()
+            with st.expander("🎯 机会筛选（滞涨 + 历史先涨 + 高赔率）", expanded=True):
+                st.caption('找出"该涨还没涨、历史上总是先涨、且弹性好"的候选')
+                col_f1, col_f2, col_f3 = st.columns(3)
+                with col_f1:
+                    max_ret = st.slider("当前涨幅上限%", -5, 20, 5, 1,
+                                        key='opp_max_ret',
+                                        help="只看涨幅低于此值的（还没怎么涨的）")
+                with col_f2:
+                    max_tier = st.slider("历史档位≤", 1.0, 3.0, 2.0, 0.1,
+                                         key='opp_max_tier',
+                                         help="只看历史平均档位低于此值的（常先涨的）")
+                with col_f3:
+                    min_z = st.slider("赔率Z≥", -2.0, 2.0, 0.0, 0.1,
+                                      key='opp_min_z',
+                                      help="只看 Z 评分高于此值的（弹性好的）")
+
+                opp = display[
+                    (display['return_from_start'] <= max_ret) &
+                    (display['return_from_start'] >= -10) &
+                    (display['hist_mean_tier'].fillna(99) <= max_tier) &
+                    (display['odds_z'].fillna(-99) >= min_z)
+                ].copy()
+
+                if opp.empty:
+                    st.info("无符合条件的个股（试试放宽阈值）")
+                else:
+                    opp['综合分'] = (
+                        (max_tier - opp['hist_mean_tier']) / max_tier * 40 +
+                        opp['odds_z'] / max(opp['odds_z'].max(), 0.01) * 40 +
+                        (1 - opp['return_from_start'] / max(opp['return_from_start'].max(), 1)) * 20
+                    ).round(1)
+                    opp = opp.sort_values('综合分', ascending=False)
+                    st.success(f"找到 {len(opp)} 只候选（综合分 = 历史先涨倾向 40% + 弹性Z 40% + 尚未涨幅度 20%）")
+                    opp_show = opp[['name', 'code', '涨幅', '从低点', '历史档位', '赔率Z', '跑赢率', '综合分']].copy()
+                    opp_show = opp_show.rename(columns={'name': '名称', 'code': '代码'})
+                    st.dataframe(opp_show, use_container_width=True, hide_index=True)
+                    st.caption("⚠️ 仅为历史规律筛选，不构成投资建议。需结合 Tab 4 买入信号确认")
+
+        st.dataframe(display[show_cols].rename(columns=col_rename),
+                     use_container_width=True, hide_index=True,
+                     height=min(35 * len(display) + 38, 600))
+
+        # ---- Insight: history vs current cross-check ----
+        if show_hist_tag and 'hist_mean_tier' in display.columns:
+            st.divider()
+            st.subheader("🔍 历史 vs 当前 交叉验证")
+            valid = display.dropna(subset=['hist_mean_tier'])
+            if not valid.empty:
+                top_cur = valid.head(10)
+                top_hist = valid.nsmallest(10, 'hist_mean_tier')
+                overlap = set(top_cur['code']) & set(top_hist['code'])
+                col_x1, col_x2 = st.columns(2)
+                with col_x1:
+                    st.caption("**当前涨幅前 10** vs 历史档位")
+                    for _, r in top_cur.iterrows():
+                        tag = ' ✅' if r['code'] in overlap else ''
+                        st.write(f"{r['name']}  +{r['return_from_start']:.1f}%  (历史档位 {r.get('hist_mean_tier','—'):.1f}){tag}")
+                with col_x2:
+                    st.caption("**历史稳定先涨前 10** vs 当前涨幅")
+                    for _, r in top_hist.iterrows():
+                        tag = ' ✅' if r['code'] in overlap else ''
+                        st.write(f"{r['name']}  (历史档位 {r['hist_mean_tier']:.1f})  +{r['return_from_start']:.1f}%{tag}")
+                if overlap:
+                    st.success(f"历史先涨股中本次也领涨的: {len(overlap)} 只 — {', '.join([valid[valid['code']==c]['name'].iloc[0] for c in overlap])}")
+                else:
+                    st.warning("历史稳定先涨股本次均未进入当前涨幅前 10 — 本轮节奏可能与历史不同")
+
+    st.divider()
+
+    # ============ 历史规律分析 ============
+    st.subheader("📊 历史领涨/滞涨规律分析")
+
+    # ---- Controls ----
+    col_w1, col_w2, col_w3 = st.columns([1, 1, 2])
+    with col_w1:
+        window = st.slider("启动窗口（交易日）", 5, 40, 20, 1,
+                           help='从周期起点开始计算的交易日数。窗口越短越反映"谁最先动"，越长越反映"前期谁涨得多"')
+    with col_w2:
+        hist_use_stock_low = st.radio(
+            "低点定义",
+            ["个股自身K线", "板块统一起点"],
+            index=0,
+            horizontal=True,
+            key='hist_low_mode',
+            help='个股自身K线：用argrelextrema找每只股自己的低点（和detect_cycles同算法）。板块统一：所有股票从板块起点起算'
+        ) == "个股自身K线"
+    with col_w3:
+        with st.expander("ℹ️ 方法说明", expanded=False):
+            st.markdown("""
+            **定义**：每轮行情从起点开始的前 N 个交易日累计涨幅，按涨幅等分三档：
+            - **tier 1 先涨组**（涨幅最高 1/3）
+            - **tier 2 中段**
+            - **tier 3 后涨组**（涨幅最低 1/3）
+
+            **检验指标**：
+            - **Spearman 秩相关**：两轮之间个股涨幅排名的相关性。>0 = 正相关，=0 无关联
+            - **Jaccard 重合度**：两轮先涨组（tier 1）的交集/并集。高于随机基线 = 有稳定先涨股
+            - **个体稳定性**：每只股票跨轮的 tier 均值（越接近 1 越常先涨）和标准差（越小越稳定）
+
+            ⚠️ 9 轮周期、早期轮次个股不全，结论为粗略估计，非统计显著结论
+            """)
+
+    # ---- Compute ----
+    with st.spinner('计算各轮个股启动涨幅...'):
+        detail = compute_lead_lag(window_days=window, use_stock_low=hist_use_stock_low)
+    if detail.empty:
+        st.warning("无数据")
+        return
+    analysis = analyze_consistency(detail)
+
+    # ---- Summary metrics ----
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        st.metric("跨轮平均 Spearman", f"{analysis['avg_off_diag_spearman']:+.3f}",
+                  help=">0.3 提示有跨周期稳定性")
+    with col_m2:
+        jac = analysis['avg_off_diag_jaccard']
+        base = analysis['random_jaccard_baseline']
+        st.metric("先涨组 Jaccard", f"{jac:.3f}",
+                  delta=f"vs 随机 {base:.3f}",
+                  delta_color="normal" if jac > base else "inverse")
+    with col_m3:
+        st.metric("稳定先涨股数", len(analysis['stable_leads']),
+                  help="参与≥3轮且先涨率≥50%")
+    with col_m4:
+        stable_lags = analysis['stock_stability'][
+            (analysis['stock_stability']['participation'] >= 3) &
+            (analysis['stock_stability']['lag_count'] / analysis['stock_stability']['participation'] >= 0.5)
+        ]
+        st.metric("稳定后涨股数", len(stable_lags))
+
+    # ---- Participation per cycle ----
+    st.subheader("各轮参与度")
+    cycle_info = detail.groupby('cycle_idx').agg(
+        起始=('cycle_start', 'first'),
+        板块涨幅=('cycle_change_pct', 'first'),
+        参与股票数=('ts_code', 'count'),
+    )
+    cycle_info['先涨组'] = detail[detail['tier'] == 1].groupby('cycle_idx')['ts_code'].count().reindex(cycle_info.index, fill_value=0)
+    cycle_info['起始'] = pd.to_datetime(cycle_info['起始']).dt.strftime('%Y-%m-%d')
+    cycle_info['板块涨幅'] = cycle_info['板块涨幅'].apply(lambda x: f'+{x:.1f}%')
+    cycle_info.index = [f'轮{i+1}' for i in cycle_info.index]
+    st.dataframe(cycle_info, use_container_width=True, hide_index=False)
+
+    # ---- Tier consistency heatmap (stocks × cycles) ----
+    st.divider()
+    st.subheader("个股 × 周期 档位矩阵")
+    st.caption("行=个股（按平均档位排序），列=轮次。🟢=先涨(tier1) 🟡=中段(tier2) 🔴=后涨(tier3)。空白=该轮未上市")
+
+    pivot = detail.pivot_table(index=['name', 'code'], columns='cycle_idx', values='tier')
+    stock_order = analysis['stock_stability'].sort_values('mean_tier')[['name', 'code']]
+    ordered_index = [(r['name'], r['code']) for _, r in stock_order.iterrows() if (r['name'], r['code']) in pivot.index]
+    pivot = pivot.reindex(ordered_index)
+
+    cycle_labels = [f"轮{i+1}\n{detail[detail['cycle_idx']==i]['cycle_start'].iloc[0][:7]}" for i in pivot.columns]
+
+    z = pivot.values
+    # Build text labels: 先/中/后 for tiers, empty for NaN
+    tier_labels = {1.0: '先', 2.0: '中', 3.0: '后'}
+    text = np.full(z.shape, '', dtype=object)
+    for val, label in tier_labels.items():
+        text[z == val] = label
+
+    z_safe = np.nan_to_num(z, nan=0)
+    colorscale = [[0, '#e5e5e5'], [0.34, '#f87171'], [0.5, '#fbbf24'], [0.66, '#22c55e'], [1, '#22c55e']]
+    fig = go.Figure(data=go.Heatmap(
+        z=z_safe, text=text, texttemplate='%{text}',
+        x=cycle_labels,
+        y=[f"{n}({c})" for (n, c) in pivot.index],
+        colorscale=colorscale, zmin=0, zmax=3, showscale=False,
+        hovertemplate='%{y}<br>%{x}<br>%{text}<extra></extra>',
+    ))
+    fig.update_layout(
+        height=max(400, len(pivot) * 18 + 80),
+        margin=dict(l=10, r=10, t=10, b=60),
+        yaxis=dict(autorange='reversed'),
+        xaxis=dict(side='bottom', tickangle=0),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ---- Spearman & Jaccard matrices side by side ----
+    st.divider()
+    st.subheader("跨轮一致性矩阵")
+    col_s, col_j = st.columns(2)
+
+    with col_s:
+        st.caption("**Spearman 秩相关**（个股涨幅排名的跨轮相关性）")
+        sp = analysis['spearman_matrix']
+        sp_labels = [f"轮{i+1}" for i in sp.columns]
+        fig_sp = go.Figure(data=go.Heatmap(
+            z=sp.values, x=sp_labels, y=sp_labels,
+            colorscale='RdBu', zmid=0, zmin=-1, zmax=1,
+            text=sp.values.round(2), texttemplate='%{text}',
+            hovertemplate='%{y} × %{x}<br>ρ=%{z:.3f}<extra></extra>',
+        ))
+        fig_sp.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10),
+                             yaxis=dict(autorange='reversed'))
+        st.plotly_chart(fig_sp, use_container_width=True)
+
+    with col_j:
+        st.caption(f"**Jaccard 重合度**（先涨组交集/并集，随机基线={analysis['random_jaccard_baseline']:.3f}）")
+        jac_m = analysis['jaccard_matrix']
+        jac_labels = [f"轮{i+1}" for i in jac_m.columns]
+        fig_jac = go.Figure(data=go.Heatmap(
+            z=jac_m.values, x=jac_labels, y=jac_labels,
+            colorscale='Greens', zmin=0, zmax=1,
+            text=jac_m.values.round(2), texttemplate='%{text}',
+            hovertemplate='%{y} × %{x}<br>Jaccard=%{z:.3f}<extra></extra>',
+        ))
+        fig_jac.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10),
+                              yaxis=dict(autorange='reversed'))
+        st.plotly_chart(fig_jac, use_container_width=True)
+
+    # ---- Stock stability table ----
+    st.divider()
+    st.subheader("个股节奏稳定性明细")
+    st.caption("按平均档位升序。参与轮数少的新股参考价值有限。")
+
+    ss = analysis['stock_stability'].copy()
+    ss['lead_rate'] = (ss['lead_count'] / ss['participation']).apply(lambda x: f'{x:.0%}')
+    ss['lag_rate'] = (ss['lag_count'] / ss['participation']).apply(lambda x: f'{x:.0%}')
+    ss['mean_tier'] = ss['mean_tier'].round(2)
+    ss['tier_std'] = ss['tier_std'].round(2)
+    ss['mean_return'] = (ss['mean_return'] * 100).round(1).apply(lambda x: f'+{x}%')
+
+    show_cols = ['name', 'code', 'participation', 'lead_count', 'lead_rate',
+                 'lag_count', 'lag_rate', 'mean_tier', 'tier_std', 'mean_return']
+    ss_display = ss[show_cols].rename(columns={
+        'name': '名称', 'code': '代码', 'participation': '参与轮数',
+        'lead_count': '先涨次数', 'lead_rate': '先涨率',
+        'lag_count': '后涨次数', 'lag_rate': '后涨率',
+        'mean_tier': '平均档位', 'tier_std': '档位σ', 'mean_return': '平均窗口涨幅',
+    })
+    st.dataframe(ss_display, use_container_width=True, hide_index=True,
+                 height=min(35 * len(ss_display) + 38, 700))
+
+    # ---- Stable leads / lags ----
+    col_sl, col_sla = st.columns(2)
+    with col_sl:
+        st.subheader("🎯 稳定先涨股")
+        st.caption("参与≥3轮 且 先涨率≥50%")
+        sl = analysis['stable_leads'][['name', 'code', 'participation', 'lead_count', 'lead_rate', 'mean_tier']].copy()
+        if sl.empty:
+            st.info("无")
+        else:
+            st.dataframe(sl.rename(columns={
+                'name': '名称', 'code': '代码', 'participation': '参与轮数',
+                'lead_count': '先涨次数', 'lead_rate': '先涨率', 'mean_tier': '平均档位'
+            }), use_container_width=True, hide_index=True)
+
+    with col_sla:
+        st.subheader("🐢 稳定后涨股")
+        st.caption("参与≥3轮 且 后涨率≥50%")
+        sl_all = analysis['stock_stability']
+        stable_lags_df = sl_all[(sl_all['participation'] >= 3) & (sl_all['lag_count'] / sl_all['participation'] >= 0.5)]
+        if stable_lags_df.empty:
+            st.info("无")
+        else:
+            lag_display = stable_lags_df[['name', 'code', 'participation', 'lag_count', 'mean_tier']].copy()
+            lag_display['lag_rate'] = (lag_display['lag_count'] / lag_display['participation']).apply(lambda x: f'{x:.0%}')
+            st.dataframe(lag_display.rename(columns={
+                'name': '名称', 'code': '代码', 'participation': '参与轮数',
+                'lag_count': '后涨次数', 'lag_rate': '后涨率', 'mean_tier': '平均档位'
+            }), use_container_width=True, hide_index=True)
+
+
 def main():
     st.title("券商板块行情启动信号回测系统")
     st.caption("基于历史行情回测，筛选有效的技术指标买入信号")
@@ -1631,12 +2024,13 @@ def main():
 
     load_odds()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📈 行情周期总览",
         "🏆 指标回测排行榜",
         "📊 个股回测对比",
         "🔍 行情跟踪",
         "💰 优选赔率",
+        "⚡ 领涨/滞涨分析",
     ])
 
     with tab1:
@@ -1653,6 +2047,9 @@ def main():
 
     with tab5:
         render_odds_tab()
+
+    with tab6:
+        render_lead_lag_tab()
 
     st.divider()
     st.caption("⚠️ 本工具仅提供技术指标信号分析，不构成投资建议。历史回测结果不代表未来表现。")
