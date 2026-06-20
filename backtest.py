@@ -396,13 +396,22 @@ def run_and_save_all(data_dfs, signal_window=45):
     return standalone
 
 
+_ref_highs_cache = {}  # (stock_code, len(stock_df)) -> ref_highs list
+
+
 def _build_stock_ref_highs(stock_df, stock_code):
     """
     Detect stock's own bull cycles and build date-indexed reference highs.
     Uses same algorithm as detect_cycles.py. Cycles cached to data/stock_cycles_{code}.csv.
     Returns list of ref_high values aligned to stock_df.index, or None on failure.
+
+    进程内缓存：同一 session 内多次调用（回测/信号检测/Tab4渲染）只算一次。
     """
     from scipy.signal import argrelextrema
+
+    cache_key = (stock_code, len(stock_df))
+    if cache_key in _ref_highs_cache:
+        return _ref_highs_cache[cache_key]
 
     cache_path = os.path.join(DATA_DIR, f'stock_cycles_{stock_code}.csv')
     cycle_df = None
@@ -436,6 +445,7 @@ def _build_stock_ref_highs(stock_df, stock_code):
             })
 
         if not cycles:
+            _ref_highs_cache[cache_key] = None
             return None
 
         cycle_df = pd.DataFrame(cycles)
@@ -468,6 +478,7 @@ def _build_stock_ref_highs(stock_df, stock_code):
             else:
                 ref_highs.append(rolling_max[i])
 
+    _ref_highs_cache[cache_key] = ref_highs
     return ref_highs
 
 
@@ -562,17 +573,42 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
 
 
 def run_all_stocks_backtest(data_dfs, signal_window=45):
-    """Run backtest for all stocks, save to CSV."""
+    """Run backtest for all stocks, save to CSV.
+    结果按数据日期缓存到磁盘：同一交易日内多次启动不重算。
+    """
     from data_fetcher import INDEX_CONSTITUENTS
     import pandas as pd
 
     cycle_path = os.path.join(OUTPUT_DIR, 'cycles.csv')
     cycle_df = pd.read_csv(cycle_path)
-    all_results = []
+    stocks = {code: df for code, df in data_dfs.get('stocks_daily', {}).items() if df is not None and not df.empty}
 
-    for code, df in data_dfs.get('stocks_daily', {}).items():
-        if df is None or df.empty:
-            continue
+    # 磁盘缓存：按数据最新日期判断是否需要重算
+    result_path = os.path.join(OUTPUT_DIR, 'stock_results.csv')
+    cache_meta_path = os.path.join(OUTPUT_DIR, '.stock_results_cache_meta')
+    if stocks:
+        # 取所有个股最新日期作为缓存 key
+        latest_dates = []
+        for code, df in stocks.items():
+            df_tmp = df.copy()
+            df_tmp['trade_date'] = pd.to_datetime(df_tmp['trade_date'])
+            latest_dates.append(str(df_tmp['trade_date'].max().date()))
+        data_sig = ','.join(sorted(latest_dates))
+
+        if os.path.exists(result_path) and os.path.exists(cache_meta_path):
+            try:
+                with open(cache_meta_path, 'r') as f:
+                    cached_sig = f.read().strip()
+                if cached_sig == f'{data_sig}|{signal_window}':
+                    combined = pd.read_csv(result_path)
+                    if not combined.empty:
+                        print(f"Stock results (cached): {len(combined)} rows")
+                        return combined
+            except Exception:
+                pass
+
+    all_results = []
+    for code, df in stocks.items():
         name = INDEX_CONSTITUENTS.get(code, code)
         r = run_stock_backtest(code, df, cycle_df, signal_window)
         r['股票名'] = name
@@ -580,8 +616,12 @@ def run_all_stocks_backtest(data_dfs, signal_window=45):
 
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
-        path = os.path.join(OUTPUT_DIR, 'stock_results.csv')
-        combined.to_csv(path, index=False, encoding='utf-8-sig')
+        combined.to_csv(result_path, index=False, encoding='utf-8-sig')
+        try:
+            with open(cache_meta_path, 'w') as f:
+                f.write(f'{data_sig}|{signal_window}')
+        except Exception:
+            pass
         print(f"Stock results: {len(combined)} rows for {len(all_results)} stocks")
         return combined
     return pd.DataFrame()

@@ -263,6 +263,19 @@ def _is_fresh(path, max_hours=12):
     return (datetime.now() - mtime).total_seconds() < max_hours * 3600
 
 
+def _cache_usable(path):
+    """判断本地缓存是否可直接使用（不走 API）。
+    历史K线数据不会变，只要满足以下任一条件即可：
+    1. mtime 新鲜（12h内）
+    2. 当前不需要盘后更新（非交易日/盘中/缓存已是今天）
+    """
+    if not os.path.exists(path):
+        return False
+    if _is_fresh(path):
+        return True
+    return not _needs_eod_update(path)
+
+
 # ---------------------------------------------------------------------------
 # Holiday / trading-day helpers
 # 外部接口: https://api.haoshenqi.top/holiday?date=YYYY-MM-DD
@@ -395,11 +408,11 @@ def fetch_index_constituents(force=False):
 
 def fetch_index_daily(force=False):
     """获取 399975.SZ 日线。主源 AKShare → 备源 tushare。
-    缓存命中：非 force 且 mtime 新鲜 且 不需盘后更新。
+    缓存命中：非 force 且 _cache_usable（mtime新鲜 或 非交易日直接用本地）。
     工作日 15:00 后若缓存最新日期 < 今天，自动触发增量拉取。
     """
     path = _cache_path('index_daily')
-    if not force and _is_fresh(path) and not _needs_eod_update(path):
+    if not force and _cache_usable(path):
         return _read_csv(path)
 
     existing = None
@@ -446,12 +459,12 @@ def fetch_index_daily(force=False):
 
 def fetch_stock_daily(ts_code, force=False):
     """获取个股日线。主源 AKShare → 备源 tushare。
-    缓存命中：非 force 且 mtime 新鲜 且 不需盘后更新。
+    缓存命中：非 force 且 _cache_usable（mtime新鲜 或 非交易日直接用本地）。
     工作日 15:00 后若缓存最新日期 < 今天，自动触发增量拉取。
     """
     code = ts_code.split('.')[0]
     path = _cache_path(f'stock_daily_{code}')
-    if not force and _is_fresh(path) and not _needs_eod_update(path):
+    if not force and _cache_usable(path):
         return _read_csv(path)
 
     existing = None
