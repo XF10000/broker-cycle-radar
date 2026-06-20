@@ -210,6 +210,8 @@ def compute_odds_signals():
         ('MACD柱线缩短', INDICATOR_REGISTRY['MACD柱线缩短']['params'][0]),
     ]
 
+    from backtest import _build_stock_ref_highs
+
     records = []
     progress = st.progress(0, '检测各股信号...')
     total = len(df)
@@ -223,6 +225,11 @@ def compute_odds_signals():
             sdf = pd.read_csv(stock_path)
             sdf['trade_date'] = pd.to_datetime(sdf['trade_date'])
             sdf = sdf.sort_values('trade_date').reset_index(drop=True)
+            # 与回测口径一致：用个股自身周期高点构建 ref_highs
+            try:
+                stock_ref_highs = _build_stock_ref_highs(sdf.set_index('trade_date'), code)
+            except Exception:
+                stock_ref_highs = None
             sig_count = 0
             for ind_name, params in top_inds:
                 cfg = INDICATOR_REGISTRY.get(ind_name)
@@ -230,7 +237,7 @@ def compute_odds_signals():
                     continue
                 try:
                     raw = cfg['func'](sdf, **params)
-                    filtered = filter_signals(sdf, raw)
+                    filtered = filter_signals(sdf, raw, ref_highs=stock_ref_highs)
                     if filtered.tail(30).any():
                         sig_count += 1
                 except Exception:
@@ -1257,7 +1264,8 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
                 sd = seg['trade_date'][sig_disp.values]
                 sv = cci_vals[sig_disp.values]
                 fig.add_trace(go.Scatter(x=sd, y=sv, mode='markers',
-                    marker=dict(symbol='triangle-up', size=10, color='blue'), name='CCI信号'), row=2, col=1)
+                    marker=dict(symbol='triangle-up', size=10, color='blue'), name='CCI信号',
+                    hovertemplate='日期: %{x|%Y-%m-%d}<br>CCI: %{y:.1f}<extra></extra>'), row=2, col=1)
 
     # MACD柱线缩短 in row 3 (visual confirmation, #3 by score)
     if 'MACD柱线缩短' in indicators:
@@ -1285,7 +1293,8 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
                 sd = seg['trade_date'][sig_disp.values]
                 sh = hist[sig_disp.values]
                 fig.add_trace(go.Scatter(x=sd, y=sh, mode='markers',
-                    marker=dict(symbol='triangle-up', size=10, color='blue'), name='MACD信号'), row=3, col=1)
+                    marker=dict(symbol='triangle-up', size=10, color='blue'), name='MACD信号',
+                    hovertemplate='日期: %{x|%Y-%m-%d}<br>HIST: %{y:.4f}<extra></extra>'), row=3, col=1)
 
     # OBV in row 4
     obv_v = talib.OBV(seg['close'].values.astype(float), seg['vol'].values.astype(float))
@@ -1302,7 +1311,8 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
             sd_dates = seg['trade_date'][obv_disp.values]
             sd_vals = obv_v[obv_disp.values]
             fig.add_trace(go.Scatter(x=sd_dates, y=sd_vals, mode='markers',
-                marker=dict(symbol='triangle-up', size=10, color='blue'), name='OBV信号'), row=4, col=1)
+                marker=dict(symbol='triangle-up', size=10, color='blue'), name='OBV信号',
+                hovertemplate='日期: %{x|%Y-%m-%d}<br>OBV: %{y:.0f}<extra></extra>'), row=4, col=1)
 
     fig.update_xaxes(rangebreaks=_build_rangebreaks(seg['trade_date']), tickformat='%Y-%m',
                      rangeslider=dict(visible=True, thickness=0.03), row=4, col=1)
@@ -1382,7 +1392,7 @@ def _render_signal_summary(top_inds):
             'Z评分': f"{z_val:+.2f}" if z_val > -999 else '—',
             '信号': stars,
             '触发指标': ' + '.join(sig_names) if sig_names else '—',
-            '最近信号日': max(sig_dates).strftime('%m-%d') if sig_dates else '—',
+            '最近信号日': max(sig_dates).strftime('%Y-%m-%d') if sig_dates else '—',
             '_z': z_val,
             '_cnt': sig_count,
         })
