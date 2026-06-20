@@ -442,10 +442,13 @@ def _build_stock_ref_highs(stock_df, stock_code):
         cycle_df.to_csv(cache_path, index=False)
 
     # Hybrid: before first cycle end → rolling 250-day max; after → own cycle end price
+    # After last cycle end: max(last_cycle_peak, rolling_max) — 防止漏检周期
+    # 导致 ref_high 卡在旧高点（如东吴证券2024-11的8.22，实际2025-08已达10.69）
     first_cycle_end = cycle_df['end_date'].min()
     close_vals = stock_df['close'].values.astype(float)
     rolling_max = pd.Series(close_vals).rolling(250, min_periods=1).max().values
     cycle_peaks_sorted = sorted([(c['end_date'], c['end_price']) for _, c in cycle_df.iterrows()])
+    last_cycle_end = cycle_peaks_sorted[-1][0]
 
     ref_highs = []
     for i, d in enumerate(stock_df.index):
@@ -456,7 +459,14 @@ def _build_stock_ref_highs(stock_df, stock_code):
             for peak_date, peak_price in cycle_peaks_sorted:
                 if peak_date <= d: rh = peak_price
                 else: break
-            ref_highs.append(rh if rh is not None else rolling_max[i])
+            if rh is not None:
+                # 最后一个周期终点之后：取 max(周期高点, rolling_max)
+                # 防止漏检周期的高点丢失（如某轮涨幅被平滑缩水后低于阈值被过滤）
+                if d > last_cycle_end:
+                    rh = max(rh, rolling_max[i])
+                ref_highs.append(rh)
+            else:
+                ref_highs.append(rolling_max[i])
 
     return ref_highs
 
