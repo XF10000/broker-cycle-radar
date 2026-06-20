@@ -427,14 +427,52 @@ def save_results(detail_df, analysis, window_days=20):
         print(f"  {os.path.join(OUTPUT_DIR, f'lead_lag_stability_w{window_days}.csv')}")
 
 
-def detect_recent_low(index_df, lookback_days=120):
-    """Detect the most recent local low in index daily data as cycle start candidate.
-    Searches within the last `lookback_days` bars for the lowest low.
-    Returns pd.Timestamp.
+def detect_recent_low(index_df, lookback_days=120, confirm_threshold=0.03,
+                      order=5):
+    """找最近的已确认反转的低点作为当前轮次起点候选。
+
+    算法（方法3：局部低点 + 反转确认）：
+    1. 在 lookback 窗口内用 argrelextrema 找局部最低点（order=5）
+    2. 从最近的候选往回遍历，找第一个"已确认"的——即从该低点到最新收盘价
+       的涨幅 >= confirm_threshold（默认3%），说明已反转启动
+    3. 若 argrelextrema 找不到确认低点（最近低点右侧数据不足 order 根），
+       退化为窗口最低 low，但仍要求涨幅确认
+    4. 若全部不满足确认条件（可能还在下跌中），返回窗口最低点让用户自行判断
+
+    Args:
+        index_df: 指数日线，需含 trade_date, low, close 列
+        lookback_days: 搜索窗口天数
+        confirm_threshold: 反转确认阈值，从低点到最新的涨幅 >= 此值才算确认
+        order: argrelextrema 的 order 参数（左右各 order 根 K 线比较）
+
+    Returns:
+        pd.Timestamp: 低点日期
     """
-    recent = index_df.tail(lookback_days)
-    low_idx = recent['low'].idxmin()
-    return index_df.loc[low_idx, 'trade_date']
+    recent = index_df.tail(lookback_days).reset_index(drop=True)
+    low = recent['low'].values
+    close = recent['close'].values
+    dates = recent['trade_date'].values
+    latest_close = close[-1]
+
+    # 1. argrelextrema 找局部最低
+    troughs = argrelextrema(low, np.less, order=order)[0]
+
+    # 2. 从最近的候选往回找，返回第一个已确认的
+    for idx in reversed(troughs):
+        trough_low = low[idx]
+        recovery = (latest_close - trough_low) / trough_low
+        if recovery >= confirm_threshold:
+            return pd.Timestamp(dates[idx])
+
+    # 3. argrelextrema 没找到确认低点 → 退化为窗口最低 low
+    abs_low_idx = int(low.argmin())
+    abs_low = low[abs_low_idx]
+    recovery = (latest_close - abs_low) / abs_low
+    if recovery >= confirm_threshold:
+        return pd.Timestamp(dates[abs_low_idx])
+
+    # 4. 全部未确认（可能还在下跌）→ 返回最低点，用户自行判断
+    return pd.Timestamp(dates[abs_low_idx])
 
 
 def compute_current_returns(start_date=None, stability_df=None, odds_df=None,
@@ -446,11 +484,13 @@ def compute_current_returns(start_date=None, stability_df=None, odds_df=None,
     - Fixed start (use_stock_low=False): all stocks measured from same start_date
     - Per-stock low (use_stock_low=True): each stock measured from its own lowest
       low within the last `low_lookback_days`. This captures stocks that bottomed
-      earlier than the index (e.g. CITIC Securities bottomed 2 months before index).
+      earlier than the index (e.g. 中信建投 4/7 见底，板块 6/9 才见底).
 
     Args:
-        start_date: pd.Timestamp/str, used when use_stock_low=False, or as the
-                    left bound when searching for per-stock lows.
+        start_date: pd.Timestamp/str. 板块起点，用于:
+                    - use_stock_low=False 时作为统一起点
+                    - use_stock_low=True 时作为个股低点搜索的右界上界参考
+                      （不截断搜索左界，个股可在板块起点之前见底）
         stability_df: optional stock_stability DataFrame from analyze_consistency.
         odds_df: optional stock_odds DataFrame with median_z etc.
 
@@ -470,11 +510,10 @@ def compute_current_returns(start_date=None, stability_df=None, odds_df=None,
         current_date = sdf['trade_date'].iloc[-1]
 
         if use_stock_low:
-            # Search window: last N days, bounded by start_date if provided
-            if start_date is not None:
-                search_seg = sdf[sdf['trade_date'] >= pd.Timestamp(start_date)]
-            else:
-                search_seg = sdf.tail(low_lookback_days)
+            # 个股低点搜索：取最近 low_lookback_days 天的最低 low 作为起点。
+            # 不用 start_date 截断左界——个股可能在板块见底之前就见底
+            # （如中信建投 4/7 见底，板块 6/9 才见底，提前 2 个月）。
+            search_seg = sdf.tail(low_lookback_days)
             if search_seg.empty:
                 continue
             low_idx = search_seg['low'].idxmin()
