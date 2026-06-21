@@ -29,7 +29,6 @@ from config import (
     SIGNAL_WINDOW_STOCK, LATE_CUTOFF_DAYS, RESONANCE_WINDOW_DAYS,
     SCORE_MAX, HEATMAP_HIT_FAST, HEATMAP_LATE_FAST,
     CYCLE_FILTER_DATE, CACHE_TTL_SECONDS, CACHE_FRESH_HOURS,
-    SMOOTH_WINDOW, MIN_AMPLITUDE_PCT, MIN_DURATION_DAYS, ARGRELEXTREMA_ORDER,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -541,25 +540,6 @@ def _build_ref_for_df(df, cycles_df=None):
             ref = max(ref, since_max)
         rh.append(ref)
     return rh
-
-
-def _detect_stock_peaks(stock_df):
-    """Find cycle end prices for a stock using same algorithm as detect_cycles.py."""
-    from scipy.signal import argrelextrema
-    close = stock_df['close'].values.astype(float)
-    smoothed = pd.Series(close).rolling(SMOOTH_WINDOW, min_periods=1).mean().values
-    peaks = argrelextrema(smoothed, np.greater, order=ARGRELEXTREMA_ORDER)[0]
-    troughs = argrelextrema(smoothed, np.less, order=ARGRELEXTREMA_ORDER)[0]
-    cycle_highs = []
-    for t_idx in troughs:
-        later = peaks[peaks > t_idx]
-        if len(later) == 0: continue
-        p_idx = later[0]
-        if int(p_idx - t_idx) < MIN_DURATION_DAYS: continue
-        chg = (close[p_idx] - close[t_idx]) / close[t_idx] * 100
-        if chg < MIN_AMPLITUDE_PCT: continue
-        cycle_highs.append((stock_df['trade_date'].iloc[p_idx], close[p_idx]))
-    return sorted(cycle_highs)
 
 
 def render_sidebar():
