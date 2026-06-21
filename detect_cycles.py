@@ -11,16 +11,15 @@ import pandas as pd
 from scipy.signal import argrelextrema
 
 from data_fetcher import fetch_index_daily
+from config import (
+    SMOOTH_WINDOW, MIN_AMPLITUDE_PCT, MIN_DURATION_DAYS, ARGRELEXTREMA_ORDER,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
-# ---- Tunable constants ----
-SMOOTH_WINDOW = 20       # MA period for smoothing
-MIN_AMPLITUDE_PCT = 25   # Minimum rally amplitude (%)
-MIN_DURATION_DAYS = 20   # Minimum rally duration (trading days)
-MERGE_ORDER = 10          # Order for argrelextrema (half-window size)
-# ---------------------------
+# ---- Tunable constants (引自 config.py) ----
+# SMOOTH_WINDOW / MIN_AMPLITUDE_PCT / MIN_DURATION_DAYS / ARGRELEXTREMA_ORDER
 
 
 def detect_cycles(df, smooth_window=SMOOTH_WINDOW,
@@ -38,8 +37,8 @@ def detect_cycles(df, smooth_window=SMOOTH_WINDOW,
     smoothed = pd.Series(close).rolling(smooth_window, min_periods=1).mean().values
 
     # Find local minima (troughs) and maxima (peaks)
-    troughs = argrelextrema(smoothed, np.less, order=MERGE_ORDER)[0]
-    peaks = argrelextrema(smoothed, np.greater, order=MERGE_ORDER)[0]
+    troughs = argrelextrema(smoothed, np.less, order=ARGRELEXTREMA_ORDER)[0]
+    peaks = argrelextrema(smoothed, np.greater, order=ARGRELEXTREMA_ORDER)[0]
 
     # Build cycles: each trough followed by next peak = one bull cycle
     cycles = []

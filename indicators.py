@@ -14,6 +14,11 @@ import pandas as pd
 import talib
 from scipy.signal import argrelextrema
 
+from config import (
+    MA_PERIOD, DECLINE_PCT, DECLINE_FACTOR, SIGNAL_COOLDOWN,
+    STATE_WINDOW, PRICE_DROP_THRESHOLD,
+)
+
 
 # ============================================================
 # 5.1 Trend indicators
@@ -476,7 +481,9 @@ def get_all_signal_rules():
 # Signal context filter
 # ============================================================
 
-def filter_signals(df, signal_series, ma_period=250, decline_pct=20, cooldown=15, state_window=5, ref_highs=None, price_drop_threshold=2.0):
+def filter_signals(df, signal_series, ma_period=MA_PERIOD, decline_pct=DECLINE_PCT,
+                   cooldown=SIGNAL_COOLDOWN, state_window=STATE_WINDOW,
+                   ref_highs=None, price_drop_threshold=PRICE_DROP_THRESHOLD):
     """
     Post-filter signals with trend context and cooldown.
     Only keep signals when market is in correction/downtrend mode.
@@ -503,7 +510,7 @@ def filter_signals(df, signal_series, ma_period=250, decline_pct=20, cooldown=15
     if ref_highs is not None:
         decline = (np.array(ref_highs) - close) / (np.array(ref_highs) + 1e-10) * 100
     else:
-        rolling_high = pd.Series(close).rolling(250, min_periods=1).max().values
+        rolling_high = pd.Series(close).rolling(ma_period, min_periods=1).max().values
         decline = (rolling_high - close) / (rolling_high + 1e-10) * 100
 
     # Per-day context: is market in correction mode?

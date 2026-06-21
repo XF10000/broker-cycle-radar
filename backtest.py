@@ -5,6 +5,14 @@ import os
 import pandas as pd
 import numpy as np
 
+from config import (
+    MA_PERIOD, DECLINE_PCT, SIGNAL_WINDOW_INDEX, SIGNAL_WINDOW_STOCK,
+    LATE_CUTOFF_DAYS, RESONANCE_WINDOW_DAYS, CYCLE_FILTER_DATE,
+    SMOOTH_WINDOW, MIN_AMPLITUDE_PCT, MIN_DURATION_DAYS, ARGRELEXTREMA_ORDER,
+    SCORE_IDEAL_DAYS, SCORE_DAYS_NORMALIZE, WEIGHT_DAYS_SCORE,
+    WEIGHT_HIT_RATE, WEIGHT_PRECISION,
+)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
@@ -30,7 +38,7 @@ def _param_str(params):
     return ', '.join(parts)
 
 
-def judge_signal(signal_series, cycle_start, cycle_end, signal_window=30):
+def judge_signal(signal_series, cycle_start, cycle_end, signal_window=SIGNAL_WINDOW_INDEX):
     """
     Judge whether a signal successfully predicted a market cycle.
 
@@ -62,7 +70,7 @@ def judge_signal(signal_series, cycle_start, cycle_end, signal_window=30):
         }
 
     # Check if signal fires too late (after cycle_start + 10 days)
-    late_cutoff = cycle_start + pd.Timedelta(days=10)
+    late_cutoff = cycle_start + pd.Timedelta(days=LATE_CUTOFF_DAYS)
     late_mask = (signal_series.index > cycle_start) & (signal_series.index <= late_cutoff)
     if signal_series[late_mask].any():
         return {
@@ -80,7 +88,7 @@ def judge_signal(signal_series, cycle_start, cycle_end, signal_window=30):
     }
 
 
-def count_false_signals(signal_series, cycles, signal_window=30):
+def count_false_signals(signal_series, cycles, 	 signal_window=SIGNAL_WINDOW_INDEX):
     """
     Count signals that fall outside any cycle's valid window.
     A signal is 'false' if it's not in any [start-signal_window, start+10] window.
@@ -91,14 +99,14 @@ def count_false_signals(signal_series, cycles, signal_window=30):
         start = pd.Timestamp(cycle['start_date'])
         end = pd.Timestamp(cycle['end_date'])
         window_start = start - pd.Timedelta(days=signal_window)
-        window_end = start + pd.Timedelta(days=10)
+        window_end = start + pd.Timedelta(days=LATE_CUTOFF_DAYS)
         valid_mask[(signal_series.index >= window_start) & (signal_series.index <= window_end)] = True
 
     false_signals = signal_series & ~valid_mask
     return false_signals.sum()
 
 
-def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
+def run_backtest(cycle_df, signals_list, data_dfs, 	 signal_window=SIGNAL_WINDOW_INDEX):
     """
     Run backtest for all signal rules against all cycles.
 
@@ -113,7 +121,7 @@ def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
     """
     # All cycles for reference (including pre-2010), but only 2010+ for hit counting
     cycles_all = cycle_df.to_dict('records')
-    cycles = [c for c in cycles_all if pd.Timestamp(c['start_date']) >= pd.Timestamp('2010-01-01')]
+    cycles = [c for c in cycles_all if pd.Timestamp(c['start_date']) >= pd.Timestamp(CYCLE_FILTER_DATE)]
     total_cycles = len(cycles)
 
     # Build cycle amplitude weights (weighted hit rate)
@@ -182,7 +190,7 @@ def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
                 start = pd.Timestamp(cycle['start_date'])
                 end = pd.Timestamp(cycle['end_date'])
                 window_start = start - pd.Timedelta(days=signal_window)
-                window_end = start + pd.Timedelta(days=10)
+                window_end = start + pd.Timedelta(days=LATE_CUTOFF_DAYS)
 
                 # Count at most 1 effective signal per cycle for precision
                 window_mask = (signal_series.index >= window_start) & (signal_series.index <= window_end)
@@ -207,8 +215,8 @@ def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
             # Composite score: balance hit_rate, signal precision, and timing
             days_score = 0
             if avg_days is not None:
-                days_score = abs(avg_days - 5) / 30 * 0.3
-            score = weighted_hr * 0.5 + precision * 0.2 - days_score
+                days_score = abs(avg_days - SCORE_IDEAL_DAYS) / SCORE_DAYS_NORMALIZE * WEIGHT_DAYS_SCORE
+            score = weighted_hr * WEIGHT_HIT_RATE + precision * WEIGHT_PRECISION - days_score
 
             results.append({
                 '指标名': rule['name'],
@@ -228,7 +236,7 @@ def run_backtest(cycle_df, signals_list, data_dfs, signal_window=30):
     return results_df
 
 
-def run_and_save(data_dfs, signal_window=30):
+def run_and_save(data_dfs, 	 signal_window=SIGNAL_WINDOW_INDEX):
     """Convenience: run backtest and save to CSV."""
     from indicators import get_all_signal_rules
 
@@ -247,7 +255,7 @@ def run_and_save(data_dfs, signal_window=30):
     return results
 
 
-def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window=45):
+def run_resonance_backtest(cycle_df, standalone_results, data_dfs, 	 signal_window=SIGNAL_WINDOW_STOCK):
     """
     Multi-timeframe resonance backtest: weekly indicator fires first,
     then daily indicator confirms within a 30-day observation window.
@@ -255,7 +263,7 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
     from indicators import INDICATOR_REGISTRY, filter_signals
 
     cycles_all = cycle_df.to_dict('records')
-    cycles = [c for c in cycles_all if pd.Timestamp(c['start_date']) >= pd.Timestamp('2010-01-01')]
+    cycles = [c for c in cycles_all if pd.Timestamp(c['start_date']) >= pd.Timestamp(CYCLE_FILTER_DATE)]
     total_cycles = len(cycles)
     cycle_weights = np.array([c['change_pct'] / 100 for c in cycles])
     total_weight = cycle_weights.sum()
@@ -322,7 +330,7 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
             total_signals = 0
 
             for ws_date in w_signal_dates:
-                window_end = ws_date + pd.Timedelta(days=30)
+                window_end = ws_date + pd.Timedelta(days=RESONANCE_WINDOW_DAYS)
                 window_mask = (daily_df.index >= ws_date) & (daily_df.index <= window_end)
                 window_daily_sigs = d_sig[window_mask]
                 if window_daily_sigs.any():
@@ -340,7 +348,7 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
                 start = pd.Timestamp(cycle['start_date'])
                 end = pd.Timestamp(cycle['end_date'])
                 window_start = start - pd.Timedelta(days=signal_window)
-                window_end = start + pd.Timedelta(days=10)
+                window_end = start + pd.Timedelta(days=LATE_CUTOFF_DAYS)
 
                 window_mask = (resonance_sig.index >= window_start) & (resonance_sig.index <= window_end)
                 if resonance_sig[window_mask].any():
@@ -361,8 +369,8 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
             precision = hit_signal_count / total_signals if total_signals > 0 else 0
             days_score = 0
             if avg_days is not None:
-                days_score = abs(avg_days - 5) / 30 * 0.3
-            score = weighted_hr * 0.5 + precision * 0.2 - days_score
+                days_score = abs(avg_days - SCORE_IDEAL_DAYS) / SCORE_DAYS_NORMALIZE * WEIGHT_DAYS_SCORE
+            score = weighted_hr * WEIGHT_HIT_RATE + precision * WEIGHT_PRECISION - days_score
 
             rule_name = f'周线:{w_name} + 日线:{d_name}'
             results.append({
@@ -381,7 +389,7 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, signal_window
     return pd.DataFrame(results)
 
 
-def run_and_save_all(data_dfs, signal_window=45):
+def run_and_save_all(data_dfs, 	 signal_window=SIGNAL_WINDOW_STOCK):
     """Run standalone + resonance backtest, save merged results."""
     standalone = run_and_save(data_dfs, signal_window)
     resonance = run_resonance_backtest(
@@ -425,9 +433,9 @@ def _build_stock_ref_highs(stock_df, stock_code):
     if cycle_df is None or cycle_df.empty:
         close = stock_df['close'].values.astype(float)
         dates = stock_df.index
-        smoothed = pd.Series(close).rolling(20, min_periods=1).mean().values
-        troughs = argrelextrema(smoothed, np.less, order=10)[0]
-        peaks = argrelextrema(smoothed, np.greater, order=10)[0]
+        smoothed = pd.Series(close).rolling(SMOOTH_WINDOW, min_periods=1).mean().values
+        troughs = argrelextrema(smoothed, np.less, order=ARGRELEXTREMA_ORDER)[0]
+        peaks = argrelextrema(smoothed, np.greater, order=ARGRELEXTREMA_ORDER)[0]
 
         cycles = []
         for t_idx in troughs:
@@ -435,9 +443,9 @@ def _build_stock_ref_highs(stock_df, stock_code):
             if len(later) == 0: continue
             p_idx = later[0]
             dur = int(p_idx - t_idx)
-            if dur < 20: continue
+            if dur < MIN_DURATION_DAYS: continue
             chg = (close[p_idx] - close[t_idx]) / close[t_idx] * 100
-            if chg < 25: continue
+            if chg < MIN_AMPLITUDE_PCT: continue
             cycles.append({
                 'end_date': dates[p_idx],
                 'end_price': round(float(close[p_idx]), 2),
@@ -456,7 +464,7 @@ def _build_stock_ref_highs(stock_df, stock_code):
     # 导致 ref_high 卡在旧高点（如东吴证券2024-11的8.22，实际2025-08已达10.69）
     first_cycle_end = cycle_df['end_date'].min()
     close_vals = stock_df['close'].values.astype(float)
-    rolling_max = pd.Series(close_vals).rolling(250, min_periods=1).max().values
+    rolling_max = pd.Series(close_vals).rolling(MA_PERIOD, min_periods=1).max().values
     cycle_peaks_sorted = sorted([(c['end_date'], c['end_price']) for _, c in cycle_df.iterrows()])
     last_cycle_end = cycle_peaks_sorted[-1][0]
 
@@ -482,7 +490,7 @@ def _build_stock_ref_highs(stock_df, stock_code):
     return ref_highs
 
 
-def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
+def run_stock_backtest(stock_code, stock_df, cycle_df, 	 signal_window=SIGNAL_WINDOW_STOCK):
     """
     Run backtest for a single stock against index-defined market cycles.
     Uses top 3 indicators from index backtest.
@@ -492,7 +500,7 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
     from indicators import INDICATOR_REGISTRY, filter_signals, get_all_signal_rules
 
     cycles_all = cycle_df.to_dict('records')
-    cycles = [c for c in cycles_all if pd.Timestamp(c['start_date']) >= pd.Timestamp('2010-01-01')]
+    cycles = [c for c in cycles_all if pd.Timestamp(c['start_date']) >= pd.Timestamp(CYCLE_FILTER_DATE)]
     total_cycles = len(cycles)
     cycle_weights = np.array([c['change_pct'] / 100 for c in cycles])
     total_weight = cycle_weights.sum()
@@ -536,7 +544,7 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
             start = pd.Timestamp(cycle['start_date'])
             end = pd.Timestamp(cycle['end_date'])
             ws = start - pd.Timedelta(days=signal_window)
-            we = start + pd.Timedelta(days=10)
+            we = start + pd.Timedelta(days=LATE_CUTOFF_DAYS)
             wm = (sig.index >= ws) & (sig.index <= we)
             if sig[wm].any():
                 hit_count += 1
@@ -572,7 +580,7 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, signal_window=45):
     return pd.DataFrame(results)
 
 
-def run_all_stocks_backtest(data_dfs, signal_window=45):
+def run_all_stocks_backtest(data_dfs, 	 signal_window=SIGNAL_WINDOW_STOCK):
     """Run backtest for all stocks, save to CSV.
     结果按数据日期缓存到磁盘：同一交易日内多次启动不重算。
     """

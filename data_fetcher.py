@@ -11,6 +11,8 @@ import os
 import pandas as pd
 from datetime import datetime
 
+from config import DATA_START_DATE, CACHE_FRESH_HOURS
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 TUSHARE_TOKEN_FILE = os.path.join(BASE_DIR, '.tushare_token')
@@ -256,7 +258,7 @@ def _cache_path(name):
     return os.path.join(DATA_DIR, f'{name}.csv')
 
 
-def _is_fresh(path, max_hours=12):
+def _is_fresh(path, max_hours=CACHE_FRESH_HOURS):
     if not os.path.exists(path):
         return False
     mtime = datetime.fromtimestamp(os.path.getmtime(path))
@@ -443,9 +445,9 @@ def fetch_index_daily(force=False):
 
     # 全量拉取
     def _ak():
-        return _akshare_index_daily(start_date='2008-01-01')
+        return _akshare_index_daily(start_date=DATA_START_DATE)
     def _ts():
-        return _tushare_index_daily(start_date='2008-01-01')
+        return _tushare_index_daily(start_date=DATA_START_DATE)
 
     try:
         df = _try_sources('fetch_index_daily(全量)', _ak, _ts)
@@ -493,9 +495,9 @@ def fetch_stock_daily(ts_code, force=False):
 
     # 全量
     def _ak():
-        return _akshare_stock_daily(ts_code, start_date='20080101', end_date=datetime.now().strftime('%Y%m%d'))
+        return _akshare_stock_daily(ts_code, start_date=DATA_START_DATE.replace('-', ''), end_date=datetime.now().strftime('%Y%m%d'))
     def _ts():
-        return _tushare_stock_daily(ts_code, start_date='2008-01-01')
+        return _tushare_stock_daily(ts_code, start_date=DATA_START_DATE)
 
     try:
         df = _try_sources(f'fetch_stock_daily({ts_code}, 全量)', _ak, _ts)

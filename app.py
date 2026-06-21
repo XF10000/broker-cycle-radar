@@ -24,6 +24,14 @@ from indicators import get_all_signal_rules, INDICATOR_REGISTRY, filter_signals,
 from backtest import run_backtest, run_and_save, run_and_save_all, judge_signal, count_false_signals, run_all_stocks_backtest
 from lead_lag import compute_lead_lag, analyze_consistency, compute_current_returns, detect_recent_low
 
+from config import (
+    MA_PERIOD, DECLINE_PCT, DECLINE_FACTOR, SIGNAL_WINDOW_INDEX,
+    SIGNAL_WINDOW_STOCK, LATE_CUTOFF_DAYS, RESONANCE_WINDOW_DAYS,
+    SCORE_MAX, HEATMAP_HIT_FAST, HEATMAP_LATE_FAST,
+    CYCLE_FILTER_DATE, CACHE_TTL_SECONDS, CACHE_FRESH_HOURS,
+    SMOOTH_WINDOW, MIN_AMPLITUDE_PCT, MIN_DURATION_DAYS, ARGRELEXTREMA_ORDER,
+)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
@@ -47,7 +55,7 @@ def init_session():
         'stock_results': None,
         'cycles_df': None,
         'display_cycles': None,
-        'signal_window': 30,
+        'signal_window': SIGNAL_WINDOW_INDEX,
         'last_data_date': '',
         'data_error': '',
         'odds_df': None,
@@ -64,7 +72,7 @@ def init_session():
 init_session()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
 def load_all_data_cached(force_refresh=False):
     """Load all data with caching. Returns dict. Set force_refresh=True to bypass local CSV cache."""
     from data_fetcher import fetch_index_daily as _fetch_idx, fetch_stock_daily as _fetch_stk
@@ -145,7 +153,7 @@ def load_cycles():
         st.session_state.cycles_df = all_df  # keep all for reference calc
         # Display only 2010+ cycles
         st.session_state.display_cycles = all_df[
-            pd.to_datetime(all_df['start_date']) >= pd.Timestamp('2010-01-01')
+            pd.to_datetime(all_df['start_date']) >= pd.Timestamp(CYCLE_FILTER_DATE)
         ]
         return True
     return False
@@ -453,7 +461,7 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
 
     # MA250
     full_close = compute_seg['close'].values.astype(float)
-    ma250 = talib.SMA(full_close, 250)
+    ma250 = talib.SMA(full_close, MA_PERIOD)
     ma250_disp = ma250[disp_mask.values]
     fig.add_trace(go.Scatter(
         x=segment['trade_date'], y=ma250_disp,
@@ -463,10 +471,10 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
 
     # Stock-specific decline line
     if stock_ref_highs is not None:
-        decline_line = np.array(stock_ref_highs) * 0.80
+        decline_line = np.array(stock_ref_highs) * DECLINE_FACTOR
     else:
-        rolling_max = pd.Series(compute_seg['close'].values.astype(float)).rolling(250, min_periods=1).max().values
-        decline_line = rolling_max * 0.80
+        rolling_max = pd.Series(compute_seg['close'].values.astype(float)).rolling(MA_PERIOD, min_periods=1).max().values
+        decline_line = rolling_max * DECLINE_FACTOR
     decline_disp = decline_line[disp_mask.values]
     fig.add_trace(go.Scatter(
         x=segment['trade_date'], y=decline_disp,
@@ -539,17 +547,17 @@ def _detect_stock_peaks(stock_df):
     """Find cycle end prices for a stock using same algorithm as detect_cycles.py."""
     from scipy.signal import argrelextrema
     close = stock_df['close'].values.astype(float)
-    smoothed = pd.Series(close).rolling(20, min_periods=1).mean().values
-    peaks = argrelextrema(smoothed, np.greater, order=10)[0]
-    troughs = argrelextrema(smoothed, np.less, order=10)[0]
+    smoothed = pd.Series(close).rolling(SMOOTH_WINDOW, min_periods=1).mean().values
+    peaks = argrelextrema(smoothed, np.greater, order=ARGRELEXTREMA_ORDER)[0]
+    troughs = argrelextrema(smoothed, np.less, order=ARGRELEXTREMA_ORDER)[0]
     cycle_highs = []
     for t_idx in troughs:
         later = peaks[peaks > t_idx]
         if len(later) == 0: continue
         p_idx = later[0]
-        if int(p_idx - t_idx) < 20: continue
+        if int(p_idx - t_idx) < MIN_DURATION_DAYS: continue
         chg = (close[p_idx] - close[t_idx]) / close[t_idx] * 100
-        if chg < 25: continue
+        if chg < MIN_AMPLITUDE_PCT: continue
         cycle_highs.append((stock_df['trade_date'].iloc[p_idx], close[p_idx]))
     return sorted(cycle_highs)
 
@@ -741,7 +749,7 @@ def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线'):
     # Add MA250 and decline threshold lines for context
     if freq == '日线':
         full_close = compute_seg['close'].values.astype(float)
-        ma250 = talib.SMA(full_close, 250)
+        ma250 = talib.SMA(full_close, MA_PERIOD)
         ma250_disp = ma250[disp_mask.values]
         fig.add_trace(go.Scatter(
             x=segment['trade_date'], y=ma250_disp,
@@ -760,7 +768,7 @@ def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线'):
                 if pd_ <= d: ref = pp
                 else: break
             rh.append(ref if ref is not None else close_vals[i])
-        decline_line = np.array(rh) * 0.80
+        decline_line = np.array(rh) * DECLINE_FACTOR
         decline_disp = decline_line[disp_mask.values]
         fig.add_trace(go.Scatter(
             x=segment['trade_date'], y=decline_disp,
@@ -910,7 +918,7 @@ def _render_heatmap(results_df, cycles_df):
                 w_signal_dates = w_sig[w_sig].index
                 resonance_sig = pd.Series(False, index=d_df.index)
                 for ws_date in w_signal_dates:
-                    win_end = ws_date + pd.Timedelta(days=30)
+                    win_end = ws_date + pd.Timedelta(days=RESONANCE_WINDOW_DAYS)
                     win_mask = (d_df.index >= ws_date) & (d_df.index <= win_end)
                     if d_sig[win_mask].any():
                         resonance_sig[d_sig[win_mask].index[0]] = True
@@ -920,12 +928,12 @@ def _render_heatmap(results_df, cycles_df):
                     end = pd.Timestamp(cycle['end_date'])
                     j = judge_signal(resonance_sig, start, end, signal_window=st.session_state.signal_window)
                     if j['hit']:
-                        z_row.append(3 if j['days_before'] <= 15 else 2)
+                        z_row.append(3 if j['days_before'] <= HEATMAP_HIT_FAST else 2)
                         t_row.append(f"共振命中 提前{j['days_before']}天")
                     elif j['late']:
                         sd = j['signal_date']
                         days_after = (sd - start).days
-                        z_row.append(1 if days_after <= 5 else 0.5)
+                        z_row.append(1 if days_after <= HEATMAP_LATE_FAST else 0.5)
                         t_row.append(f"晚了{days_after}天")
                     else:
                         z_row.append(0); t_row.append('错过')
@@ -993,12 +1001,12 @@ def _render_heatmap(results_df, cycles_df):
                 j = judge_signal(sig, start, end, signal_window=st.session_state.signal_window)
                 if j['hit']:
                     days = j['days_before']
-                    z_row.append(3 if days <= 15 else 2)
+                    z_row.append(3 if days <= HEATMAP_HIT_FAST else 2)
                     t_row.append(f"命中 提前{days}天")
                 elif j['late']:
                     sd = j['signal_date']
                     days_after = (sd - start).days
-                    z_row.append(1 if days_after <= 5 else 0.5)
+                    z_row.append(1 if days_after <= HEATMAP_LATE_FAST else 0.5)
                     t_row.append(f"晚了{days_after}天")
                 else:
                     z_row.append(0); t_row.append('错过')
@@ -1091,7 +1099,7 @@ def render_indicator_rankings():
         use_container_width=True,
         column_config={
             '综合得分': st.column_config.ProgressColumn(
-                '综合得分', format='%.3f', min_value=0, max_value=0.5,
+                '综合得分', format='%.3f', min_value=0, max_value=SCORE_MAX,
             ),
         },
         hide_index=True,
@@ -1209,7 +1217,7 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
 
     # Add 250MA and decline threshold to K-line
     full_close = compute_seg['close'].values.astype(float)
-    ma250 = talib.SMA(full_close, 250)
+    ma250 = talib.SMA(full_close, MA_PERIOD)
     # For index: use cycle peaks; for stocks: detect own cycle peaks
     if is_index:
         ref_highs = _build_ref_for_df(compute_seg)
@@ -1218,7 +1226,7 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
         from backtest import _build_stock_ref_highs
         stock_df_idx = compute_seg.set_index('trade_date').sort_index()
         ref_highs = _build_stock_ref_highs(stock_df_idx, label)
-    decline_disp = (np.array(ref_highs) * 0.80)[disp_mask.values] if ref_highs else None
+    decline_disp = (np.array(ref_highs) * DECLINE_FACTOR)[disp_mask.values] if ref_highs else None
 
     ma250_disp = ma250[disp_mask.values]
 
