@@ -267,7 +267,7 @@ def toggle_favorite(ts_code):
 def run_backtest_now():
     if st.session_state.index_daily is None:
         st.error("请先加载数据")
-        return
+        return False
     data_dfs = {
         'index_daily': st.session_state.index_daily,
         'index_weekly': st.session_state.index_weekly,
@@ -276,7 +276,7 @@ def run_backtest_now():
     try:
         results = run_and_save_all(data_dfs, st.session_state.signal_window)
         st.session_state.backtest_results = results
-        # Also run stock backtest
+        # 个股回测：优先用磁盘缓存（同交易日不重算）
         stock_data = {'stocks_daily': st.session_state.stocks_daily}
         st.session_state.stock_results = run_all_stocks_backtest(stock_data, st.session_state.signal_window)
         return True
@@ -570,8 +570,15 @@ def render_sidebar():
     if st.session_state.data_error:
         st.sidebar.warning(f"⚠️ {st.session_state.data_error}")
 
-    if st.sidebar.button("📥 加载/刷新数据", use_container_width=True):
-        load_data(force=True)
+    col_load, col_force = st.sidebar.columns([3, 1])
+    with col_load:
+        load_clicked = st.button("📥 加载数据", use_container_width=True)
+    with col_force:
+        force_refresh = st.checkbox("强制刷新", value=False,
+                                    help="勾选后绕过本地缓存，从API重新拉取。不勾选时优先用本地CSV")
+
+    if load_clicked:
+        load_data(force=force_refresh)
         load_cycles()
         run_backtest_now()
         st.rerun()
