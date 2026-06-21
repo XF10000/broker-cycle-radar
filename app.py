@@ -570,7 +570,7 @@ def render_sidebar():
     if st.session_state.data_error:
         st.sidebar.warning(f"⚠️ {st.session_state.data_error}")
 
-    col_load, col_force = st.sidebar.columns([3, 1])
+    col_load, col_force = st.sidebar.columns([2, 2])
     with col_load:
         load_clicked = st.button("📥 加载数据", use_container_width=True)
     with col_force:
@@ -1213,27 +1213,12 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
     # For index: use cycle peaks; for stocks: detect own cycle peaks
     if is_index:
         ref_highs = _build_ref_for_df(compute_seg)
-        decline_disp = (np.array(ref_highs) * 0.85)[disp_mask.values] if ref_highs else None
     else:
-        stock_peaks = _detect_stock_peaks(compute_seg)
-        if stock_peaks:
-            last_peak_date = stock_peaks[-1][0]
-            rh = []
-            for i, d in enumerate(compute_seg['trade_date']):
-                ref = None
-                for pd_, pp in stock_peaks:
-                    if pd_ <= d: ref = pp
-                    else: break
-                # After last peak: use max close since that peak
-                if d > last_peak_date:
-                    since = full_close[(compute_seg['trade_date'] > last_peak_date) & (compute_seg['trade_date'] <= d)]
-                    since_max = since.max() if len(since) > 0 else ref
-                    ref = max(ref, since_max)
-                rh.append(ref if ref is not None else full_close[i])
-            ref_highs = rh
-        else:
-            ref_highs = None
-        decline_disp = (np.array(ref_highs) * 0.85)[disp_mask.values] if ref_highs else None
+        # 与回测口径一致：用 _build_stock_ref_highs（含最后周期后 rolling_max 兜底）
+        from backtest import _build_stock_ref_highs
+        stock_df_idx = compute_seg.set_index('trade_date').sort_index()
+        ref_highs = _build_stock_ref_highs(stock_df_idx, label)
+    decline_disp = (np.array(ref_highs) * 0.80)[disp_mask.values] if ref_highs else None
 
     ma250_disp = ma250[disp_mask.values]
 
