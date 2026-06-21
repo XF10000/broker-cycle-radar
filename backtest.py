@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 
 from config import (
-    MA_PERIOD, DECLINE_PCT, SIGNAL_WINDOW_INDEX, SIGNAL_WINDOW_STOCK,
+    MA_PERIOD, SIGNAL_WINDOW_INDEX, SIGNAL_WINDOW_STOCK,
     LATE_CUTOFF_DAYS, RESONANCE_WINDOW_DAYS, CYCLE_FILTER_DATE,
     SMOOTH_WINDOW, MIN_AMPLITUDE_PCT, MIN_DURATION_DAYS, ARGRELEXTREMA_ORDER,
     SCORE_IDEAL_DAYS, SCORE_DAYS_NORMALIZE, WEIGHT_DAYS_SCORE,
@@ -88,7 +88,7 @@ def judge_signal(signal_series, cycle_start, cycle_end, signal_window=SIGNAL_WIN
     }
 
 
-def count_false_signals(signal_series, cycles, 	 signal_window=SIGNAL_WINDOW_INDEX):
+def count_false_signals(signal_series, cycles,  signal_window=SIGNAL_WINDOW_INDEX):
     """
     Count signals that fall outside any cycle's valid window.
     A signal is 'false' if it's not in any [start-signal_window, start+10] window.
@@ -106,7 +106,7 @@ def count_false_signals(signal_series, cycles, 	 signal_window=SIGNAL_WINDOW_IND
     return false_signals.sum()
 
 
-def run_backtest(cycle_df, signals_list, data_dfs, 	 signal_window=SIGNAL_WINDOW_INDEX):
+def run_backtest(cycle_df, signals_list, data_dfs,  signal_window=SIGNAL_WINDOW_INDEX):
     """
     Run backtest for all signal rules against all cycles.
 
@@ -236,7 +236,7 @@ def run_backtest(cycle_df, signals_list, data_dfs, 	 signal_window=SIGNAL_WINDOW
     return results_df
 
 
-def run_and_save(data_dfs, 	 signal_window=SIGNAL_WINDOW_INDEX):
+def run_and_save(data_dfs,  signal_window=SIGNAL_WINDOW_INDEX):
     """Convenience: run backtest and save to CSV."""
     from indicators import get_all_signal_rules
 
@@ -255,7 +255,7 @@ def run_and_save(data_dfs, 	 signal_window=SIGNAL_WINDOW_INDEX):
     return results
 
 
-def run_resonance_backtest(cycle_df, standalone_results, data_dfs, 	 signal_window=SIGNAL_WINDOW_STOCK):
+def run_resonance_backtest(cycle_df, standalone_results, data_dfs,  signal_window=SIGNAL_WINDOW_STOCK):
     """
     Multi-timeframe resonance backtest: weekly indicator fires first,
     then daily indicator confirms within a 30-day observation window.
@@ -389,7 +389,7 @@ def run_resonance_backtest(cycle_df, standalone_results, data_dfs, 	 signal_wind
     return pd.DataFrame(results)
 
 
-def run_and_save_all(data_dfs, 	 signal_window=SIGNAL_WINDOW_STOCK):
+def run_and_save_all(data_dfs,  signal_window=SIGNAL_WINDOW_STOCK):
     """Run standalone + resonance backtest, save merged results."""
     standalone = run_and_save(data_dfs, signal_window)
     resonance = run_resonance_backtest(
@@ -490,7 +490,7 @@ def _build_stock_ref_highs(stock_df, stock_code):
     return ref_highs
 
 
-def run_stock_backtest(stock_code, stock_df, cycle_df, 	 signal_window=SIGNAL_WINDOW_STOCK):
+def run_stock_backtest(stock_code, stock_df, cycle_df,  signal_window=SIGNAL_WINDOW_STOCK):
     """
     Run backtest for a single stock against index-defined market cycles.
     Uses top 3 indicators from index backtest.
@@ -580,7 +580,7 @@ def run_stock_backtest(stock_code, stock_df, cycle_df, 	 signal_window=SIGNAL_WI
     return pd.DataFrame(results)
 
 
-def run_all_stocks_backtest(data_dfs, 	 signal_window=SIGNAL_WINDOW_STOCK):
+def run_all_stocks_backtest(data_dfs,  signal_window=SIGNAL_WINDOW_STOCK):
     """Run backtest for all stocks, save to CSV.
     结果按数据日期缓存到磁盘：同一交易日内多次启动不重算。
     """
