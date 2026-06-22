@@ -443,6 +443,7 @@ def _build_stock_ref_highs(stock_df, stock_code):
     if os.path.exists(cache_path):
         cycle_df = pd.read_csv(cache_path)
         if 'start_date' in cycle_df.columns:
+            cycle_df['start_date'] = pd.to_datetime(cycle_df['start_date'])
             cycle_df['end_date'] = pd.to_datetime(cycle_df['end_date'])
         else:
             cycle_df = None  # force re-detection
@@ -608,6 +609,7 @@ def run_stock_backtest(stock_code, stock_df, cycle_df,  signal_window=SIGNAL_WIN
             '指标名': rule['name'],
             '类别': rule['category'],
             '周期': '日线',
+            '参数': _param_str(rule['params']),
             '命中率': round(weighted_hr, 3),
             '命中轮数': f'{hits}/{total_cycles}',
             '平均提前天': round(avg_days, 1) if avg_days is not None else None,
@@ -700,6 +702,7 @@ def _build_stock_ref_lows(stock_df, stock_code):
     if os.path.exists(cache_path):
         cycle_df = pd.read_csv(cache_path)
         if 'start_date' in cycle_df.columns:
+            cycle_df['start_date'] = pd.to_datetime(cycle_df['start_date'])
             cycle_df['end_date'] = pd.to_datetime(cycle_df['end_date'])
         else:
             cycle_df = None  # force re-detection
@@ -1204,6 +1207,7 @@ def run_stock_sell_backtest(stock_code, stock_df, cycle_df):
             '指标名': rule['name'],
             '类别': rule['category'],
             '周期': '日线',
+            '参数': _param_str(rule['params']),
             '命中率': round(weighted_hr, 3),
             '命中轮数': f'{hits}/{total_cycles}',
             '平均捕获率': round(avg_capture, 3),

@@ -1039,7 +1039,6 @@ def filter_sell_signals(df, signal_series, ma_period=MA_PERIOD, rise_pct=RISE_PC
     close = df['close'].values.astype(float)
     n = len(close)
 
-    ma = talib.SMA(close, timeperiod=ma_period)
     if ref_lows is not None:
         rise = (close - np.array(ref_lows)) / (np.array(ref_lows) + 1e-10) * 100
     else:
@@ -1047,6 +1046,8 @@ def filter_sell_signals(df, signal_series, ma_period=MA_PERIOD, rise_pct=RISE_PC
         rise = (close - rolling_low) / (rolling_low + 1e-10) * 100
 
     # Per-day context: is market in uptrend mode? (rise > threshold from ref_low)
+    # 卖出侧不加 close > MA250 条件：熊市反弹顶（年线下方）也是有效卖出时机，
+    # 涨幅 > RISE_PCT(30%) 已足够过滤虚警（见 config.py RISE_PCT 注释）。
     context_ok = np.zeros(n, dtype=bool)
     for i in range(n):
         if not np.isnan(rise[i]):

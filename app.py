@@ -319,6 +319,21 @@ def run_backtest_now(force_regenerate=False):
         return False
 
 
+def _parse_params_from_str(indicator_name, params_str, registry):
+    """从 _param_str() 生成的中文串还原参数 dict。
+    遍历注册表里该指标的参数组合，找到 _param_str 匹配的那组。
+    匹配失败则返回 None。
+    """
+    cfg = registry.get(indicator_name)
+    if cfg is None:
+        return None
+    from backtest import _param_str
+    for p in cfg['params']:
+        if _param_str(p) == params_str:
+            return p
+    return None
+
+
 def render_stock_backtest():
     st.header("个股买入回测对比")
 
@@ -401,11 +416,25 @@ def render_stock_backtest():
     # Stock detail: select stock + indicator, show per-cycle K-line charts
     st.divider()
     st.subheader("个股行情信号详情")
+
+    # Build display names with parameters (mirror of Tab 2)
+    df_detail = df.copy()
+    df_detail['显示名'] = df_detail.apply(
+        lambda r: f"{r['指标名']} ({r['参数']})", axis=1) if '参数' in df_detail.columns else df_detail['指标名']
+    # 取得分前8的 (指标名+参数) 组合
+    top_combos = df_detail.sort_values('综合得分', ascending=False).drop_duplicates('显示名').head(8)
+    display_names = top_combos['显示名'].tolist()
+    display_to_name = dict(zip(top_combos['显示名'], top_combos['指标名']))
+    display_to_params = dict(zip(top_combos['显示名'], top_combos.get('参数', pd.Series([None]*len(top_combos)))))
+
     col_s1, col_s2 = st.columns(2)
     with col_s1:
         sel_stock = st.selectbox('选择股票', list(stock_list), key='stock_detail')
     with col_s2:
-        sel_ind = st.selectbox('选择指标', list(top_inds), key='stock_detail_ind')
+        sel_display = st.selectbox('选择指标(参数)', display_names, key='stock_detail_ind')
+
+    sel_ind = display_to_name.get(sel_display) if sel_display else None
+    sel_params_str = display_to_params.get(sel_display) if sel_display else None
 
     if sel_stock and sel_ind and st.session_state.display_cycles is not None:
         cycles = st.session_state.display_cycles.to_dict('records')
@@ -413,7 +442,7 @@ def render_stock_backtest():
         if match.empty:
             st.info("该股无回测数据")
             return
-        stock_code = match.iloc[0]['股票']
+        stock_code = str(match.iloc[0]['股票'])
         if not st.session_state.stocks_daily:
             st.info("请先在侧边栏加载个股数据")
             return
@@ -434,10 +463,10 @@ def render_stock_backtest():
                 if ci >= n_cycles: break
                 cycle = cycles[ci]
                 with cols[col_idx]:
-                    _render_stock_cycle_detail(cycle, ci, sel_ind, sel_stock, sd, stock_code)
+                    _render_stock_cycle_detail(cycle, ci, sel_ind, sel_stock, sd, stock_code, sel_params_str)
 
 
-def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, stock_data, stock_code=''):
+def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, stock_data, stock_code='', params_str=None):
     """Render K-line chart for a stock with indicator signals."""
     start = pd.Timestamp(cycle['start_date'])
     end = pd.Timestamp(cycle['end_date'])
@@ -454,7 +483,8 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
 
     cfg = INDICATOR_REGISTRY.get(indicator_name)
     if cfg is None: return
-    params = cfg['params'][0]
+    # 从中文参数串反查参数 dict，失败则回退到第一组
+    params = _parse_params_from_str(indicator_name, params_str, INDICATOR_REGISTRY) or cfg['params'][0]
 
     # Build stock-specific ref_highs — detect stock's own cycles (cached)
     from backtest import _build_stock_ref_highs
@@ -584,19 +614,71 @@ def render_stock_sell_backtest_tab():
         })
     if summary:
         sm = pd.DataFrame(summary)
-        sm = sm.sort_values('得分', ascending=False)
+        # Sort by Z score if available (mirror of buy-side)
+        if st.session_state.odds_df is not None and not st.session_state.odds_df.empty:
+            z_map = {}
+            for _, r in st.session_state.odds_df.iterrows():
+                raw = r['ts_code'].split('.')[0]
+                z_map[raw] = r.get('median_z', -999)
+            sm['_z'] = sm['股票'].apply(
+                lambda x: z_map.get(x.split('(')[-1].rstrip(')'), -999))
+            sm = sm.sort_values('_z', ascending=False).drop(columns=['_z'])
+        else:
+            sm = sm.sort_values('得分', ascending=False)
         st.dataframe(sm, use_container_width=True, hide_index=True)
+
+    # Heatmap: stocks × top indicators (mirror of buy-side)
+    st.subheader("个股 × 指标 热力图")
+    top_inds = df['指标名'].unique()[:8]
+    stock_list = df['股票名'].unique()
+
+    z = []; y = []
+    for sn in stock_list:
+        sdf = df[df['股票名'] == sn]
+        row = []
+        for ind in top_inds:
+            match = sdf[sdf['指标名'] == ind]
+            if not match.empty:
+                row.append(match.iloc[0]['综合得分'])
+            else:
+                row.append(-1)
+        z.append(row)
+        y.append(sn)
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z, x=list(top_inds), y=y,
+        colorscale='RdYlGn', zmid=0,
+        hovertemplate='%{y} × %{x}<br>得分=%{z:.3f}<extra></extra>',
+    ))
+    fig.update_layout(
+        height=max(200, len(stock_list) * 40 + 100),
+        margin=dict(l=10, r=10, t=10, b=80),
+        yaxis=dict(autorange='reversed'),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
     # Stock sell detail
     st.divider()
     st.subheader("个股卖出信号详情")
-    top_inds = df['指标名'].unique()[:8]
-    stock_list = df['股票名'].unique()
+
+    # Build display names with parameters (mirror of Tab 2 / Tab 3 buy-side)
+    df_detail = df.copy()
+    df_detail['显示名'] = df_detail.apply(
+        lambda r: f"{r['指标名']} ({r['参数']})", axis=1)
+    # 取得分前8的 (指标名+参数) 组合，而非去重后的指标名
+    top_combos = df_detail.sort_values('综合得分', ascending=False).drop_duplicates('显示名').head(8)
+    display_names = top_combos['显示名'].tolist()
+    display_to_name = dict(zip(top_combos['显示名'], top_combos['指标名']))
+    display_to_params = dict(zip(top_combos['显示名'], top_combos['参数']))
+
     col_s1, col_s2 = st.columns(2)
     with col_s1:
         sel_stock = st.selectbox('选择股票', list(stock_list), key='stock_sell_detail')
     with col_s2:
-        sel_ind = st.selectbox('选择指标', list(top_inds), key='stock_sell_detail_ind')
+        sel_display = st.selectbox('选择指标(参数)', display_names, key='stock_sell_detail_ind')
+
+    sel_ind = display_to_name.get(sel_display) if sel_display else None
+    sel_params_str = display_to_params.get(sel_display) if sel_display else None
 
     if sel_stock and sel_ind and st.session_state.display_cycles is not None:
         cycles = st.session_state.display_cycles.to_dict('records')
@@ -604,7 +686,7 @@ def render_stock_sell_backtest_tab():
         if match.empty:
             st.info("该股无回测数据")
             return
-        stock_code = match.iloc[0]['股票']
+        stock_code = str(match.iloc[0]['股票'])
         if not st.session_state.stocks_daily:
             st.info("请先在侧边栏加载个股数据")
             return
@@ -625,10 +707,10 @@ def render_stock_sell_backtest_tab():
                 if ci >= n_cycles: break
                 cycle = cycles[ci]
                 with cols[col_idx]:
-                    _render_stock_sell_cycle_detail(cycle, ci, sel_ind, sel_stock, sd, stock_code)
+                    _render_stock_sell_cycle_detail(cycle, ci, sel_ind, sel_stock, sd, stock_code, sel_params_str)
 
 
-def _render_stock_sell_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, stock_data, stock_code=''):
+def _render_stock_sell_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, stock_data, stock_code='', params_str=None):
     """Render K-line chart for a stock with sell indicator signals."""
     import ast
     from backtest import _build_stock_ref_lows
@@ -648,7 +730,8 @@ def _render_stock_sell_cycle_detail(cycle, cycle_idx, indicator_name, stock_name
 
     cfg = SELL_INDICATOR_REGISTRY.get(indicator_name)
     if cfg is None: return
-    params = cfg['params'][0]
+    # 从中文参数串反查参数 dict，失败则回退到第一组
+    params = _parse_params_from_str(indicator_name, params_str, SELL_INDICATOR_REGISTRY) or cfg['params'][0]
 
     full_df = stock_data.copy()
     full_df['trade_date'] = pd.to_datetime(full_df['trade_date'])
@@ -681,6 +764,29 @@ def _render_stock_sell_cycle_detail(cycle, cycle_idx, indicator_name, stock_name
         x=segment['trade_date'], open=segment['open'], high=segment['high'],
         low=segment['low'], close=segment['close'], name='价格',
         increasing_line_color='red', decreasing_line_color='green', showlegend=False,
+    ), row=1, col=1)
+
+    # MA250 (mirror of buy-side)
+    full_close = compute_seg['close'].values.astype(float)
+    ma250 = talib.SMA(full_close, MA_PERIOD)
+    ma250_disp = ma250[disp_mask.values]
+    fig.add_trace(go.Scatter(
+        x=segment['trade_date'], y=ma250_disp,
+        name='年线(250)', line=dict(color='orange', width=1),
+        connectgaps=False,
+    ), row=1, col=1)
+
+    # Rise line from ref_lows (mirror of buy-side's decline line)
+    if sl is not None:
+        rise_line = np.array(sl) * (1 + RISE_PCT / 100)
+    else:
+        rolling_min = pd.Series(compute_seg['close'].values.astype(float)).rolling(MA_PERIOD, min_periods=1).min().values
+        rise_line = rolling_min * (1 + RISE_PCT / 100)
+    rise_disp = rise_line[disp_mask.values]
+    fig.add_trace(go.Scatter(
+        x=segment['trade_date'], y=rise_disp,
+        name=f'涨{RISE_PCT}%线', line=dict(color='gray', width=1, dash='dash'),
+        connectgaps=False,
     ), row=1, col=1)
 
     # Indicator lines + sell signal markers
@@ -927,14 +1033,8 @@ def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线', params
     if cfg is None:
         return
 
-    # Parse params from the selected row or use default
-    if params_str:
-        try:
-            params = ast.literal_eval(params_str)
-        except Exception:
-            params = cfg['params'][0]
-    else:
-        params = cfg['params'][0]
+    # 从中文参数串反查参数 dict，失败则回退到第一组
+    params = _parse_params_from_str(indicator_name, params_str, INDICATOR_REGISTRY) or cfg['params'][0]
     try:
         signals = cfg['func'](compute_seg, **params)
         signals = filter_signals(compute_seg, signals)
@@ -2385,14 +2485,8 @@ def _render_sell_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线', p
     if cfg is None:
         return
 
-    # Parse params
-    if params_str:
-        try:
-            params = ast.literal_eval(params_str)
-        except Exception:
-            params = cfg['params'][0]
-    else:
-        params = cfg['params'][0]
+    # 从中文参数串反查参数 dict，失败则回退到第一组
+    params = _parse_params_from_str(indicator_name, params_str, SELL_INDICATOR_REGISTRY) or cfg['params'][0]
 
     # Build ref_lows from all cycles (same as backtest engine)
     cycles_all = pd.read_csv(os.path.join(OUTPUT_DIR, 'cycles.csv'))
@@ -2748,11 +2842,11 @@ def main():
         "📈 行情周期总览",
         "🏆 买入指标回测",
         "📊 个股买入回测对比",
-        "📉 个股卖出回测对比",
         "🔍 行情跟踪",
         "💰 优选赔率",
         "⚡ 领涨/滞涨分析",
         "📉 卖出指标回测",
+        "📉 个股卖出回测对比",
         "🔄 买卖联合评估",
     ])
 
@@ -2766,19 +2860,19 @@ def main():
         render_stock_backtest()
 
     with tab4:
-        render_stock_sell_backtest_tab()
-
-    with tab5:
         render_live_tracking()
 
-    with tab6:
+    with tab5:
         render_odds_tab()
 
-    with tab7:
+    with tab6:
         render_lead_lag_tab()
 
-    with tab8:
+    with tab7:
         render_sell_rankings()
+
+    with tab8:
+        render_stock_sell_backtest_tab()
 
     with tab9:
         render_combined_backtest_tab()
