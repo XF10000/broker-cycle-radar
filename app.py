@@ -962,7 +962,9 @@ def render_cycle_overview():
 
     if st.session_state.display_cycles is not None and not st.session_state.display_cycles.empty:
         colors = ['rgba(255,0,0,0.08)', 'rgba(0,100,255,0.08)']
-        for j, (_, row) in enumerate(st.session_state.display_cycles.iterrows()):
+        rows = st.session_state.display_cycles.to_dict('records')
+        for j in range(len(rows)):
+            row = rows[j]
             color = colors[j % 2]
             fig.add_vrect(
                 x0=pd.Timestamp(row['start_date']),
@@ -971,9 +973,22 @@ def render_cycle_overview():
                 opacity=0.4,
                 layer="below",
                 line_width=0,
-                annotation_text=f"行情{j+1}",
+                annotation_text=f"行情{j+1} {row['duration_days']}天",
                 annotation_position="top left",
             )
+            # 间隔标注：上一轮终点到本轮起点
+            if j > 0:
+                prev_end = pd.Timestamp(rows[j-1]['end_date'])
+                cur_start = pd.Timestamp(row['start_date'])
+                gap_days = (cur_start - prev_end).days
+                mid = prev_end + (cur_start - prev_end) / 2
+                fig.add_annotation(
+                    x=mid, y=0,
+                    text=f"间隔{gap_days}天",
+                    showarrow=False,
+                    font=dict(size=9, color='gray'),
+                    yanchor='top',
+                )
 
     fig.update_layout(
         title='中证证券公司指数 (399975.SZ) — 历史行情周期',
@@ -993,12 +1008,253 @@ def render_cycle_overview():
         display_df = st.session_state.display_cycles.copy()
         display_df['start_date'] = pd.to_datetime(display_df['start_date']).dt.date
         display_df['end_date'] = pd.to_datetime(display_df['end_date']).dt.date
+        # 间隔天数：上一轮终点到本轮起点的日历天数
+        gaps = []
+        for i in range(len(display_df)):
+            if i == 0:
+                gaps.append(None)
+            else:
+                gaps.append((display_df['start_date'].iloc[i] - display_df['end_date'].iloc[i-1]).days)
+        display_df['间隔天数'] = gaps
         display_df.index = range(1, len(display_df) + 1)
         display_df.index.name = '#'
         st.dataframe(
-            display_df[['start_date', 'end_date', 'duration_days', 'start_price', 'end_price', 'change_pct']],
+            display_df[['start_date', 'end_date', 'duration_days', '间隔天数', 'start_price', 'end_price', 'change_pct']],
             use_container_width=True,
         )
+
+    # ---- 当前行情相似度匹配 ----
+    st.divider()
+    st.subheader("🔍 当前行情相似度匹配")
+    st.caption("将当前正在进行的行情前N天走势与历史上每轮行情的前N天对比，找出最相似的几轮")
+
+    if st.session_state.index_daily is None:
+        st.info("请先加载数据")
+        return
+
+    idx_df = st.session_state.index_daily.copy()
+    idx_df['trade_date'] = pd.to_datetime(idx_df['trade_date'])
+    idx_df = idx_df.sort_values('trade_date')
+
+    from lead_lag import detect_recent_low
+    default_start = detect_recent_low(idx_df)
+
+    trial_start = pd.Timestamp(
+        default_start.date() if default_start is not None else
+        pd.Timestamp(st.session_state.display_cycles.iloc[-1]['end_date']).date()
+    )
+    trial_seg = idx_df[idx_df['trade_date'] >= trial_start]
+    trial_days = len(trial_seg)
+
+    # Controls
+    col_s1, col_s2, col_s3, col_s4 = st.columns([2, 1, 1, 1])
+    with col_s1:
+        current_start = st.date_input(
+            "当前低点日期",
+            value=trial_start.date(),
+            key='cycle_sim_start',
+            help="以该日期为低点（谷），向前取回溯窗口、向后取反弹窗口进行比较"
+        )
+    with col_s2:
+        M = st.slider("低点前回溯（天）", 10, 120, 30, key='cycle_sim_M',
+                      help="低点之前取多少天的下跌走势纳入对比")
+    with col_s3:
+        N = st.slider("低点后窗口（天）", 5, max(10, trial_days), min(30, trial_days),
+                      key='cycle_sim_N',
+                      help=f"低点之后取多少天（当前实际 {trial_days} 天）")
+    with col_s4:
+        metric = st.selectbox("相似度指标", ["相关系数", "欧氏距离"], key='cycle_sim_metric')
+
+    current_start = pd.Timestamp(current_start)
+
+    # ---- 当前数据：M天前 + 至今 ----
+    idx_full = idx_df.set_index('trade_date').sort_index()
+    try:
+        trough_pos = idx_full.index.get_loc(current_start)
+    except KeyError:
+        trough_pos = idx_full.index.get_indexer([current_start], method='nearest')[0]
+        current_start = idx_full.index[trough_pos]
+
+    # 前 M 天
+    pre_start = max(0, trough_pos - M)
+    pre_idx = idx_full.index[pre_start:trough_pos]
+    # 后 N 天（受限于实际数据）
+    post_end = min(len(idx_full), trough_pos + N + 1)
+    post_idx = idx_full.index[trough_pos:post_end]
+
+    # 拼成完整窗口，以低点为基准归一化
+    window_close = np.concatenate([
+        idx_full['close'].iloc[pre_start:trough_pos].values,
+        idx_full['close'].iloc[trough_pos:post_end].values,
+    ]).astype(float)
+    # 低点在数组中的位置
+    trough_pos_in_window = trough_pos - pre_start
+    trough_price = idx_full['close'].iloc[trough_pos]
+    cur_norm = window_close / trough_price  # 低点=1.0
+    eff_M = trough_pos - pre_start  # 实际可用前溯天数
+    eff_N = post_end - trough_pos - 1  # 实际可用后天数
+
+    # 与历史每轮比较
+    cycles = st.session_state.display_cycles.to_dict('records')
+    scores = []
+    for i, cycle in enumerate(cycles):
+        cs = pd.Timestamp(cycle['start_date'])
+        try:
+            hist_trough = idx_full.index.get_loc(cs)
+        except KeyError:
+            continue
+        # 前 M 天（可用则取，不可用则跳过；至少需要一些预数据才有意义）
+        hist_pre = max(0, hist_trough - M)
+        if hist_pre == hist_trough:
+            continue  # 该轮在数据起点，无法取回溯窗口
+        hist_post = min(len(idx_full), hist_trough + N + 1)
+        hist_win = np.concatenate([
+            idx_full['close'].iloc[hist_pre:hist_trough].values,
+            idx_full['close'].iloc[hist_trough:hist_post].values,
+        ]).astype(float)
+        hist_tp = idx_full['close'].iloc[hist_trough]
+        hn = hist_win / hist_tp
+
+        # 对齐长度：取当前和历史窗口的最小长度
+        min_len = min(len(cur_norm), len(hn))
+        cn = cur_norm[:min_len]
+        hns = hn[:min_len]
+
+        if metric == "相关系数":
+            corr = np.corrcoef(cn, hns)[0, 1]
+            score = corr
+        else:
+            euc = np.sqrt(np.mean((cn - hns) ** 2))
+            score = -euc
+
+        scores.append({
+            'idx': i,
+            'start_date': cycle['start_date'],
+            'score': score,
+            'change_pct': cycle['change_pct'],
+            'duration': cycle['duration_days'],
+            'full_norm': hn,        # 完整历史窗口（含前溯+后延）
+            'hist_trough_idx': hist_trough - hist_pre,  # 低点在窗口中的位置
+        })
+
+    if not scores:
+        st.info("无足够历史数据进行比较")
+        return
+
+    scores.sort(key=lambda x: x['score'], reverse=True)
+    top3 = scores[:3]
+
+    # ---- 结果展示 ----
+    st.subheader("Top 3 最相似行情")
+    cols = st.columns(3)
+    emoji = ["🥇", "🥈", "🥉"]
+    for rank, (col, s) in enumerate(zip(cols, top3)):
+        with col:
+            min_len = min(len(cur_norm), len(s['full_norm']))
+            corr_val = np.corrcoef(cur_norm[:min_len], s['full_norm'][:min_len])[0, 1]
+            st.metric(
+                f"{emoji[rank]} 行情{s['idx']+1}",
+                f"{s['start_date'][:10]}",
+                delta=f"r={corr_val:.3f} | +{s['change_pct']}% | {s['duration']}天",
+            )
+
+    # ---- 投影图 ----
+    st.subheader("走势投影（以低点为中心归一化）")
+    st.caption(f"深蓝粗线=当前 | 彩色实线=历史前{eff_N}天反弹 | 彩色虚线=历史投影 | 灰色竖线=低点位置")
+
+    fig = go.Figure()
+
+    # 基线 y=1.0（低点）
+    fig.add_hline(y=1.0, line_dash='solid', line_color='lightgray', line_width=1)
+
+    # 当前走势 — 深蓝加粗，x轴以低点为0
+    cur_x = list(range(-eff_M, eff_N + 1))
+    fig.add_trace(go.Scatter(
+        x=cur_x, y=cur_norm,
+        mode='lines', name=f'当前（低点前{eff_M}天+后{eff_N}天）',
+        line=dict(color='#1a56db', width=3.5),
+    ))
+    # 低点位置
+    fig.add_vline(x=0, line_dash='dot', line_color='gray',
+                  annotation_text='低点', annotation_position='top')
+
+    colors = ['#dc2626', '#e6a817', '#16a34a']
+    for rank, (s, color) in enumerate(zip(top3, colors)):
+        label = f"行情{s['idx']+1} {s['start_date'][:7]}"
+        hn = s['full_norm']
+        h_trough = s['hist_trough_idx']
+        # x轴：低点前为负，低点后为正
+        hx = list(range(-h_trough, len(hn) - h_trough))
+        # 匹配段（低点前 eff_M 天 + 低点后 eff_N 天）
+        match_end = h_trough + eff_N + 1
+        if match_end > len(hn):
+            match_end = len(hn)
+        fig.add_trace(go.Scatter(
+            x=hx[:match_end], y=hn[:match_end],
+            mode='lines', name=f'{label}',
+            line=dict(color=color, width=1.8),
+        ))
+        # 投影段（match_end 之后）
+        if match_end < len(hn):
+            fig.add_trace(go.Scatter(
+                x=hx[match_end:], y=hn[match_end:],
+                mode='lines', name=f'{label}（投影）',
+                line=dict(color=color, dash='dash', width=2.2),
+            ))
+
+    fig.update_layout(
+        title=f'当前行情 vs 历史最相似行情（低点归一化=1.0）',
+        xaxis_title='交易日（0=低点）',
+        yaxis_title='归一化价格',
+        height=500,
+        hovermode='x unified',
+        template='plotly_white',
+        margin=dict(l=10, r=10, t=40, b=40),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 补充说明
+    with st.expander("📖 解读说明", expanded=False):
+        st.markdown(f"""
+        - **比较窗口**：以低点为基准，向前取 **{eff_M}** 天（下跌段）、向后取 **{eff_N}** 天（反弹段），共 **{eff_M + eff_N}** 天
+        - **归一化**：低点价格统一设为 1.0，只看相对涨跌节奏和底部形态，忽略绝对价格水平
+        - **相关系数**：衡量走势**形状**的相似度（1=完全相同，-1=完全相反）
+        - **投影**：虚线之后是该轮历史低点之后的**实际走势**，不代表预测，仅供参照
+        - ⚠️ 仅为统计相似性分析，不构成投资建议
+        """)
+
+    # ---- 热力图：当前 vs 所有历史 ----
+    st.divider()
+    st.subheader("当前 vs 所有历史行情 相关性热力图")
+    st.caption(f"每行=一轮历史行情，颜色=低点前后 {eff_M}+{eff_N} 天窗口的相关系数。越绿越像，越红越不像")
+
+    all_scores = []
+    for s in scores:
+        min_len = min(len(cur_norm), len(s['full_norm']))
+        corr = np.corrcoef(cur_norm[:min_len], s['full_norm'][:min_len])[0, 1]
+        all_scores.append({
+            'label': f"行情{s['idx']+1} {s['start_date'][:7]}",
+            'corr': corr,
+            'change': s['change_pct'],
+            'duration': s['duration'],
+        })
+    all_scores.sort(key=lambda x: x['corr'], reverse=True)
+
+    fig_hm = go.Figure(data=go.Heatmap(
+        z=[[s['corr']] for s in all_scores],
+        y=[s['label'] for s in all_scores],
+        x=['相关系数'],
+        colorscale='RdYlGn', zmid=0, zmin=-1, zmax=1,
+        text=[[f"r={s['corr']:.3f} | +{s['change']}% | {s['duration']}天"] for s in all_scores],
+        texttemplate='%{text}',
+        hovertemplate='%{y}<br>%{text}<extra></extra>',
+    ))
+    fig_hm.update_layout(
+        height=max(200, len(all_scores) * 25 + 60),
+        margin=dict(l=10, r=10, t=10, b=40),
+        yaxis=dict(autorange='reversed'),
+    )
+    st.plotly_chart(fig_hm, use_container_width=True)
 
 
 def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线', params_str=None):
@@ -2026,6 +2282,9 @@ def render_lead_lag_tab():
         if not idx_seg.empty:
             idx_ret = (float(idx_seg['close'].iloc[-1]) / float(idx_seg['close'].iloc[0]) - 1) * 100
             st.info(f"板块指数 399975.SZ：{start_date} 起 {idx_ret:+.1f}%")
+    else:
+        idx_seg = pd.DataFrame()
+        idx_ret = 0
 
     # Compute current returns (with history + odds annotation)
     stab_for_annot = None
