@@ -18,9 +18,6 @@ from config import (
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
-# ---- Tunable constants (引自 config.py) ----
-# SMOOTH_WINDOW / MIN_AMPLITUDE_PCT / MIN_DURATION_DAYS / ARGRELEXTREMA_ORDER
-
 
 def detect_cycles(df, smooth_window=SMOOTH_WINDOW,
                   min_amp_pct=MIN_AMPLITUDE_PCT,
@@ -28,22 +25,18 @@ def detect_cycles(df, smooth_window=SMOOTH_WINDOW,
     """
     Detect bull cycles from price data.
 
-    Returns list of dicts: [{start_date, end_date, start_price, end_price, change_pct, duration_days}]
+    Uses smoothed price to find cycle boundaries (trough/peak).
+    end_date/end_price = actual highest close within [smoothed_trough, smoothed_peak].
     """
     close = df['close'].values
     dates = df['trade_date'].values
 
-    # Smooth the close price
     smoothed = pd.Series(close).rolling(smooth_window, min_periods=1).mean().values
-
-    # Find local minima (troughs) and maxima (peaks)
     troughs = argrelextrema(smoothed, np.less, order=ARGRELEXTREMA_ORDER)[0]
     peaks = argrelextrema(smoothed, np.greater, order=ARGRELEXTREMA_ORDER)[0]
 
-    # Build cycles: each trough followed by next peak = one bull cycle
     cycles = []
     for t_idx in troughs:
-        # Find the next peak after this trough
         later_peaks = peaks[peaks > t_idx]
         if len(later_peaks) == 0:
             continue
@@ -53,23 +46,41 @@ def detect_cycles(df, smooth_window=SMOOTH_WINDOW,
         if duration < min_days:
             continue
 
-        start_price = close[t_idx]
-        end_price = close[p_idx]
-        change_pct = (end_price - start_price) / start_price * 100
+        # Smoothed amplitude check (gatekeeping) — original logic,
+        # only changed: end_date/price uses actual highest close within window.
+        smoothed_amp = (close[p_idx] - close[t_idx]) / close[t_idx] * 100
+        if smoothed_amp < min_amp_pct:
+            continue
 
+        start_price = close[t_idx]
+
+        # Find actual highest close within [t_idx, p_idx] for end_date/price
+        actual_peak_idx = int(t_idx + np.argmax(close[t_idx:p_idx+1]))
+        # Require actual peak is at least 10 trading days from trough
+        # (half of min_days) to avoid counting noise spikes as peaks
+        if actual_peak_idx - t_idx >= 10:
+            end_price = close[actual_peak_idx]
+            end_date = dates[actual_peak_idx]
+            dur = int(actual_peak_idx - t_idx)
+        else:
+            end_price = close[p_idx]
+            end_date = dates[p_idx]
+            dur = int(p_idx - t_idx)
+
+        change_pct = (end_price - start_price) / start_price * 100
         if change_pct < min_amp_pct:
             continue
 
         cycles.append({
             'start_date': pd.Timestamp(dates[t_idx]),
-            'end_date': pd.Timestamp(dates[p_idx]),
+            'end_date': pd.Timestamp(end_date),
             'start_price': round(start_price, 2),
             'end_price': round(end_price, 2),
             'change_pct': round(change_pct, 2),
-            'duration_days': duration,
+            'duration_days': dur,
         })
 
-    # Remove overlapping cycles (keep the one with larger amplitude when overlap)
+    # Remove overlapping cycles (keep larger amplitude)
     filtered = []
     for c in cycles:
         if not filtered:
@@ -77,7 +88,6 @@ def detect_cycles(df, smooth_window=SMOOTH_WINDOW,
             continue
         last = filtered[-1]
         if c['start_date'] <= last['end_date']:
-            # Overlap: keep the one with larger amplitude
             if c['change_pct'] > last['change_pct']:
                 filtered[-1] = c
         else:
@@ -96,8 +106,51 @@ def main():
     print(f"\nDetecting cycles (smooth={SMOOTH_WINDOW}, min_amp={MIN_AMPLITUDE_PCT}%, min_days={MIN_DURATION_DAYS})...")
     cycles = detect_cycles(df)
 
-    # Manually add the 2025 V-bottom rally missed by smoothing
-    # 2025-04-07 low=695 → 2025-08-25 high=951 (+36.8%)
+    # ---- Manual overrides for cycles smoothing misses ----
+
+    # 2012-01-16 trough: smoothing masks the true June peak (637.72).
+    # First smoothed peak (March) only gives 19.4% amplitude.
+    # Replace with the actual cycle spanning to the real June high.
+    seg12 = df[(df['trade_date'] >= '2012-01-16') & (df['trade_date'] <= '2012-06-30')]
+    if not seg12.empty:
+        cycles.append({
+            'start_date': pd.Timestamp('2012-01-16'),
+            'end_date': pd.Timestamp(seg12.loc[seg12['close'].idxmax(), 'trade_date']),
+            'start_price': 447.44,
+            'end_price': round(seg12['close'].max(), 2),
+            'change_pct': round((seg12['close'].max() - 447.44) / 447.44 * 100, 2),
+            'duration_days': len(seg12),
+        })
+
+    # 2014-07 to 2015-04: smoothing splits the mega-rally at the Dec→Feb
+    # pullback (-12.5%). The Feb trough (1301) is far above the Jul trough (495),
+    # so this is one continuous bull run, not two cycles.
+    seg14 = df[(df['trade_date'] >= '2014-07-15') & (df['trade_date'] <= '2015-04-22')]
+    if not seg14.empty:
+        cycles.append({
+            'start_date': pd.Timestamp('2014-07-15'),
+            'end_date': pd.Timestamp(seg14.loc[seg14['close'].idxmax(), 'trade_date']),
+            'start_price': 495.29,
+            'end_price': round(seg14['close'].max(), 2),
+            'change_pct': round((seg14['close'].max() - 495.29) / 495.29 * 100, 2),
+            'duration_days': len(seg14),
+        })
+
+    # 2018-10-19 to 2019-03-07: smoothing splits this into two cycles
+    # (Oct→Nov and Jan→Mar), but Jan 4 trough (593.74) > Oct 19 trough (488.63)
+    # — a higher low within the same recovery. Merge into one.
+    seg18 = df[(df['trade_date'] >= '2018-10-19') & (df['trade_date'] <= '2019-03-07')]
+    if not seg18.empty:
+        cycles.append({
+            'start_date': pd.Timestamp('2018-10-19'),
+            'end_date': pd.Timestamp(seg18.loc[seg18['close'].idxmax(), 'trade_date']),
+            'start_price': 488.63,
+            'end_price': round(seg18['close'].max(), 2),
+            'change_pct': round((seg18['close'].max() - 488.63) / 488.63 * 100, 2),
+            'duration_days': len(seg18),
+        })
+
+    # 2025 V-bottom rally missed by smoothing entirely
     cycles.append({
         'start_date': pd.Timestamp('2025-04-07'),
         'end_date': pd.Timestamp('2025-08-25'),
@@ -106,16 +159,31 @@ def main():
         'change_pct': 36.83,
         'duration_days': 100,
     })
+
+    # Final sort
     cycles.sort(key=lambda c: c['start_date'])
 
-    print(f"\nFound {len(cycles)} bull cycles (including 2009 for reference):\n")
+    # Remove natural-detected cycles that overlap with manual overrides
+    cycles = [c for c in cycles if not (
+        # 2012: natural detection gives short cycle (01-16→03-09), overridden
+        (str(c['start_date']).startswith('2012-01') and str(c['end_date']).startswith('2012-03')) or
+        # 2014-2015: smoothing splits mega-rally at the Dec→Feb pullback
+        (str(c['start_date']).startswith('2014-07') and str(c['end_date']).startswith('2014-12')) or
+        (str(c['start_date']).startswith('2015-02') and str(c['end_date']).startswith('2015-04')) or
+        # 2018-2019: smoothing splits recovery into two cycles
+        (str(c['start_date']).startswith('2018-10') and str(c['end_date']).startswith('2018-11')) or
+        (str(c['start_date']).startswith('2019-01') and str(c['end_date']).startswith('2019-')) or
+        # 2025: natural detection gives a later start; manual override covers it
+        (str(c['start_date']).startswith('2025-05') and str(c['end_date']).startswith('2025-08'))
+    )]
+
+    print(f"\nFound {len(cycles)} bull cycles:\n")
     print(f"{'#':<4} {'Start':<12} {'End':<12} {'Days':<6} {'Start$':<8} {'End$':<8} {'Change%':<8}")
     print("-" * 68)
     for i, c in enumerate(cycles, 1):
         print(f"{i:<4} {str(c['start_date'].date()):<12} {str(c['end_date'].date()):<12} "
               f"{c['duration_days']:<6} {c['start_price']:<8} {c['end_price']:<8} {c['change_pct']:<8}")
 
-    # Save to CSV
     cycles_df = pd.DataFrame(cycles)
     path = os.path.join(OUTPUT_DIR, 'cycles.csv')
     cycles_df.to_csv(path, index=False)

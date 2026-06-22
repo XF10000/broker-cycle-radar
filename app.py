@@ -20,14 +20,23 @@ from data_fetcher import (
     fetch_index_daily, fetch_all_stocks_daily, daily_to_weekly,
     STOCKS, INDEX_CODE, INDEX_CONSTITUENTS,
 )
-from indicators import get_all_signal_rules, INDICATOR_REGISTRY, filter_signals, get_indicator_lines
-from backtest import run_backtest, run_and_save, run_and_save_all, judge_signal, count_false_signals, run_all_stocks_backtest
+from indicators import (
+    get_all_signal_rules, INDICATOR_REGISTRY, filter_signals, get_indicator_lines,
+    SELL_INDICATOR_REGISTRY, filter_sell_signals, get_all_sell_rules,
+)
+from backtest import (
+    run_backtest, run_and_save, run_and_save_all, judge_signal,
+    count_false_signals, run_all_stocks_backtest,
+    run_sell_backtest, run_and_save_sell, run_combined_backtest,
+    run_all_stocks_sell_backtest,
+)
 from lead_lag import compute_lead_lag, analyze_consistency, compute_current_returns, detect_recent_low
 
 from config import (
-    MA_PERIOD, DECLINE_PCT, DECLINE_FACTOR, SIGNAL_WINDOW_INDEX,
+    MA_PERIOD, DECLINE_PCT, DECLINE_FACTOR, RISE_PCT, SIGNAL_WINDOW_INDEX,
     SIGNAL_WINDOW_STOCK, LATE_CUTOFF_DAYS, RESONANCE_WINDOW_DAYS,
-    SCORE_MAX, HEATMAP_HIT_FAST, HEATMAP_LATE_FAST,
+    SCORE_MAX, SCORE_SELL_MAX, HEATMAP_HIT_FAST, HEATMAP_LATE_FAST,
+    SELL_HIT_CAPTURE,
     CYCLE_FILTER_DATE, CACHE_TTL_SECONDS, CACHE_FRESH_HOURS,
 )
 
@@ -62,6 +71,9 @@ def init_session():
         'odds_signal_cache': None,
         'odds_favorites': set(),
         'odds_data_date': '',
+        'sell_backtest_results': None,
+        'combined_results': None,
+        'stock_sell_results': None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -271,7 +283,7 @@ def toggle_favorite(ts_code):
         favs.add(ts_code)
 
 
-def run_backtest_now():
+def run_backtest_now(force_regenerate=False):
     if st.session_state.index_daily is None:
         st.error("请先加载数据")
         return False
@@ -285,7 +297,22 @@ def run_backtest_now():
         st.session_state.backtest_results = results
         # 个股回测：优先用磁盘缓存（同交易日不重算）
         stock_data = {'stocks_daily': st.session_state.stocks_daily}
-        st.session_state.stock_results = run_all_stocks_backtest(stock_data, st.session_state.signal_window)
+        st.session_state.stock_results = run_all_stocks_backtest(
+            stock_data, st.session_state.signal_window, force_regenerate=force_regenerate)
+        # 个股卖出回测
+        st.session_state.stock_sell_results = run_all_stocks_sell_backtest(
+            stock_data, force_regenerate=force_regenerate)
+        # 卖出回测
+        sell_results = run_and_save_sell(data_dfs)
+        st.session_state.sell_backtest_results = sell_results
+        # 联合回测
+        if not results.empty and not sell_results.empty:
+            combined = run_combined_backtest(
+                pd.read_csv(os.path.join(OUTPUT_DIR, 'cycles.csv')),
+                results, sell_results, st.session_state.index_daily,
+                st.session_state.signal_window,
+            )
+            st.session_state.combined_results = combined
         return True
     except Exception as e:
         st.error(f"回测失败: {e}")
@@ -293,7 +320,7 @@ def run_backtest_now():
 
 
 def render_stock_backtest():
-    st.header("个股回测对比")
+    st.header("个股买入回测对比")
 
     # Try loading cached results first
     if st.session_state.stock_results is None:
@@ -382,23 +409,32 @@ def render_stock_backtest():
 
     if sel_stock and sel_ind and st.session_state.display_cycles is not None:
         cycles = st.session_state.display_cycles.to_dict('records')
-        stock_code = df[df['股票名'] == sel_stock].iloc[0]['股票']
+        match = df[df['股票名'] == sel_stock]
+        if match.empty:
+            st.info("该股无回测数据")
+            return
+        stock_code = match.iloc[0]['股票']
+        if not st.session_state.stocks_daily:
+            st.info("请先在侧边栏加载个股数据")
+            return
         stock_data = st.session_state.stocks_daily.get(stock_code)
-        if stock_data is not None:
-            sd = stock_data.copy()
-            sd['trade_date'] = pd.to_datetime(sd['trade_date'])
-            sd = sd.sort_values('trade_date')
-            n_cycles = len(cycles)
-            n_cols = 2
-            n_rows = (n_cycles + 1) // n_cols
-            for row_idx in range(n_rows):
-                cols = st.columns(n_cols)
-                for col_idx in range(n_cols):
-                    ci = row_idx * n_cols + col_idx
-                    if ci >= n_cycles: break
-                    cycle = cycles[ci]
-                    with cols[col_idx]:
-                        _render_stock_cycle_detail(cycle, ci, sel_ind, sel_stock, sd, stock_code)
+        if stock_data is None:
+            st.info(f"个股 {stock_code} 数据未加载（可能在加载时失败）")
+            return
+        sd = stock_data.copy()
+        sd['trade_date'] = pd.to_datetime(sd['trade_date'])
+        sd = sd.sort_values('trade_date')
+        n_cycles = len(cycles)
+        n_cols = 2
+        n_rows = (n_cycles + 1) // n_cols
+        for row_idx in range(n_rows):
+            cols = st.columns(n_cols)
+            for col_idx in range(n_cols):
+                ci = row_idx * n_cols + col_idx
+                if ci >= n_cycles: break
+                cycle = cycles[ci]
+                with cols[col_idx]:
+                    _render_stock_cycle_detail(cycle, ci, sel_ind, sel_stock, sd, stock_code)
 
 
 def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, stock_data, stock_code=''):
@@ -502,7 +538,7 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
 
     fig.add_vline(x=start, line_dash='dash', line_color='purple', row=1, col=1)
     fig.update_xaxes(rangebreaks=_build_rangebreaks(segment['trade_date']), tickformat='%Y-%m-%d',
-                     rangeslider=dict(visible=True, thickness=0.04), row=2, col=1)
+                     rangeslider=dict(visible=True, thickness=0.02), row=2, col=1)
     fig.update_xaxes(rangebreaks=_build_rangebreaks(segment['trade_date']), tickformat='%Y-%m-%d',
                      rangeslider_visible=False, row=1, col=1)
     fig.update_layout(title=f"{stock_name} 行情{cycle_idx+1}  {cycle['start_date'][:10]}→{cycle['end_date'][:10]}",
@@ -510,6 +546,203 @@ def _render_stock_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, sto
                        showlegend=True,
                        legend=dict(orientation='h', y=-0.08, x=0.5, xanchor='center', font=dict(size=9)),
                        margin=dict(l=10, r=10, t=40, b=40))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_stock_sell_backtest_tab():
+    """Tab 4: 个股卖出回测对比 — mirror of render_stock_backtest."""
+    st.header("个股卖出回测对比")
+
+    if st.session_state.stock_sell_results is None:
+        path = os.path.join(OUTPUT_DIR, 'stock_sell_results.csv')
+        if os.path.exists(path):
+            st.session_state.stock_sell_results = pd.read_csv(path)
+        else:
+            st.info("请先在侧边栏点击「重新回测」生成个股卖出结果")
+            return
+
+    df = st.session_state.stock_sell_results
+    if df is None or df.empty:
+        st.info("暂无个股卖出回测数据")
+        return
+
+    st.subheader("各股票最佳卖出指标得分")
+    stock_names = df['股票名'].unique()
+    summary = []
+    for sn in stock_names:
+        sdf = df[df['股票名'] == sn].sort_values('综合得分', ascending=False)
+        if sdf.empty:
+            continue
+        best = sdf.iloc[0]
+        summary.append({
+            '股票': f"{sn}({best['股票']})",
+            '最佳指标': best['指标名'],
+            '命中': best['命中轮数'],
+            '捕获率': f"{best['平均捕获率']:.1%}" if pd.notna(best['平均捕获率']) else '—',
+            '有效率': f"{best['信号有效率']:.1%}",
+            '得分': best['综合得分'],
+        })
+    if summary:
+        sm = pd.DataFrame(summary)
+        sm = sm.sort_values('得分', ascending=False)
+        st.dataframe(sm, use_container_width=True, hide_index=True)
+
+    # Stock sell detail
+    st.divider()
+    st.subheader("个股卖出信号详情")
+    top_inds = df['指标名'].unique()[:8]
+    stock_list = df['股票名'].unique()
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        sel_stock = st.selectbox('选择股票', list(stock_list), key='stock_sell_detail')
+    with col_s2:
+        sel_ind = st.selectbox('选择指标', list(top_inds), key='stock_sell_detail_ind')
+
+    if sel_stock and sel_ind and st.session_state.display_cycles is not None:
+        cycles = st.session_state.display_cycles.to_dict('records')
+        match = df[df['股票名'] == sel_stock]
+        if match.empty:
+            st.info("该股无回测数据")
+            return
+        stock_code = match.iloc[0]['股票']
+        if not st.session_state.stocks_daily:
+            st.info("请先在侧边栏加载个股数据")
+            return
+        stock_data = st.session_state.stocks_daily.get(stock_code)
+        if stock_data is None:
+            st.info(f"个股 {stock_code} 数据未加载")
+            return
+        sd = stock_data.copy()
+        sd['trade_date'] = pd.to_datetime(sd['trade_date'])
+        sd = sd.sort_values('trade_date')
+        n_cycles = len(cycles)
+        n_cols = 2
+        n_rows = (n_cycles + 1) // n_cols
+        for row_idx in range(n_rows):
+            cols = st.columns(n_cols)
+            for col_idx in range(n_cols):
+                ci = row_idx * n_cols + col_idx
+                if ci >= n_cycles: break
+                cycle = cycles[ci]
+                with cols[col_idx]:
+                    _render_stock_sell_cycle_detail(cycle, ci, sel_ind, sel_stock, sd, stock_code)
+
+
+def _render_stock_sell_cycle_detail(cycle, cycle_idx, indicator_name, stock_name, stock_data, stock_code=''):
+    """Render K-line chart for a stock with sell indicator signals."""
+    import ast
+    from backtest import _build_stock_ref_lows
+
+    start = pd.Timestamp(cycle['start_date'])
+    end = pd.Timestamp(cycle['end_date'])
+    df = stock_data.copy()
+    compute_start = start - pd.Timedelta(days=365 * 3)
+    display_start = start - pd.Timedelta(days=60)
+    view_end = end + pd.Timedelta(days=30)
+
+    comp_mask = (df['trade_date'] >= compute_start) & (df['trade_date'] <= view_end)
+    compute_seg = df[comp_mask].reset_index(drop=True)
+    if compute_seg.empty:
+        st.caption(f"{stock_name} 行情{cycle_idx+1}: 无数据")
+        return
+
+    cfg = SELL_INDICATOR_REGISTRY.get(indicator_name)
+    if cfg is None: return
+    params = cfg['params'][0]
+
+    full_df = stock_data.copy()
+    full_df['trade_date'] = pd.to_datetime(full_df['trade_date'])
+    full_df = full_df.set_index('trade_date').sort_index()
+    stock_ref_lows = _build_stock_ref_lows(full_df, stock_code)
+    sl = None
+    if stock_ref_lows is not None:
+        sl = []
+        for d in compute_seg['trade_date']:
+            if d in full_df.index:
+                idx = full_df.index.get_loc(d)
+                sl.append(stock_ref_lows[idx])
+            else:
+                sl.append(float(compute_seg[compute_seg['trade_date'] == d]['close'].iloc[0]))
+
+    try:
+        sig_kwargs = {'ref_lows': sl} if sl is not None else {}
+        signals = cfg['func'](compute_seg, **params)
+        signals = filter_sell_signals(compute_seg, signals, **sig_kwargs)
+    except Exception:
+        return
+
+    disp_mask = (compute_seg['trade_date'] >= display_start) & (compute_seg['trade_date'] <= view_end)
+    segment = compute_seg[disp_mask].reset_index(drop=True)
+    sig_seg = signals[disp_mask.values].reset_index(drop=True)
+    if segment.empty: return
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.55, 0.45])
+    fig.add_trace(go.Candlestick(
+        x=segment['trade_date'], open=segment['open'], high=segment['high'],
+        low=segment['low'], close=segment['close'], name='价格',
+        increasing_line_color='red', decreasing_line_color='green', showlegend=False,
+    ), row=1, col=1)
+
+    # Indicator lines + sell signal markers
+    all_lines = get_indicator_lines(compute_seg, indicator_name, params)
+    disp_idx = disp_mask.values
+
+    if sig_seg is not None and sig_seg.any():
+        sig_dates = segment['trade_date'][sig_seg.values]
+        marker_y = None
+        for line in all_lines:
+            if 'dash' not in line:
+                vals = line['values']
+                if isinstance(vals, np.ndarray):
+                    marker_y = vals[disp_idx][sig_seg.values]
+                break
+        if marker_y is None:
+            marker_y = segment['close'][sig_seg.values]
+        fig.add_trace(go.Scatter(
+            x=sig_dates, y=marker_y, mode='markers',
+            marker=dict(symbol='triangle-down', size=12, color='red'),
+            name='卖出信号',
+        ), row=2, col=1)
+
+    for line in all_lines:
+        values = line['values']
+        if isinstance(values, np.ndarray):
+            values = values[disp_idx]
+        if line.get('type') == 'bar':
+            colors = line.get('colors')
+            cb = [colors[i] for i in range(len(colors)) if disp_idx[i]] if colors else line.get('color', 'blue')
+            fig.add_trace(go.Bar(x=segment['trade_date'], y=values, name=line['name'],
+                                 marker_color=cb, opacity=0.7), row=2, col=1)
+        else:
+            fig.add_trace(go.Scatter(x=segment['trade_date'], y=values, name=line['name'],
+                                     line=dict(color=line.get('color', 'blue'),
+                                              dash=line.get('dash')), opacity=0.7), row=2, col=1)
+
+    # Peak + start markers
+    peak_mask = (compute_seg['trade_date'] >= start) & (compute_seg['trade_date'] <= end)
+    cycle_seg = compute_seg[peak_mask]
+    if not cycle_seg.empty:
+        actual_peak_date = cycle_seg.loc[cycle_seg['close'].idxmax(), 'trade_date']
+        fig.add_scatter(x=[actual_peak_date, actual_peak_date],
+                        y=[segment['low'].min(), segment['high'].max()],
+                        mode='lines', line=dict(dash='dot', color='red'),
+                        name='峰', showlegend=False, row=1, col=1)
+    fig.add_scatter(x=[start, start],
+                    y=[segment['low'].min(), segment['high'].max()],
+                    mode='lines', line=dict(dash='dash', color='purple'),
+                    name='起点', showlegend=False, row=1, col=1)
+
+    fig.update_layout(
+        title=f"行情{cycle_idx+1}: {start.date()} → {end.date()} (+{cycle['change_pct']}%)",
+        height=420, showlegend=True,
+        legend=dict(orientation='h', y=-0.08, x=0.5, xanchor='center', font=dict(size=9)),
+        margin=dict(l=10, r=10, t=40, b=40),
+    )
+    fig.update_xaxes(rangebreaks=_build_rangebreaks(segment['trade_date']),
+                     tickformat='%Y-%m-%d', rangeslider_visible=False, row=1, col=1)
+    fig.update_xaxes(rangeslider=dict(visible=True, thickness=0.02, borderwidth=0), row=2, col=1)
+    if indicator_name in ('RSI底背离', 'RSI顶背离', 'KDJ_J值反转', 'KDJ高位死叉'):
+        fig.update_yaxes(range=[-8, 108], row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -568,7 +801,7 @@ def render_sidebar():
     if load_clicked:
         load_data(force=force_refresh)
         load_cycles()
-        run_backtest_now()
+        run_backtest_now(force_regenerate=force_refresh)
         st.rerun()
 
     st.sidebar.divider()
@@ -584,12 +817,12 @@ def render_sidebar():
 
     st.sidebar.subheader("回测参数")
     st.session_state.signal_window = st.sidebar.slider(
-        "信号提前窗口(天)", 10, 60, st.session_state.signal_window, 5,
+        "买入信号提前窗口(天)", 10, 60, st.session_state.signal_window, 5,
     )
 
-    if st.sidebar.button("🔄 重新回测", use_container_width=True):
+    if st.sidebar.button("🔄 重新回测 (买入+卖出)", use_container_width=True):
         if st.session_state.index_daily is not None and load_cycles():
-            if run_backtest_now():
+            if run_backtest_now(force_regenerate=force_refresh):
                 st.sidebar.success("回测完成")
                 st.rerun()
         else:
@@ -641,7 +874,7 @@ def render_cycle_overview():
         xaxis_title='日期',
         yaxis_title='价格',
         height=600,
-        xaxis_rangeslider=dict(visible=True, thickness=0.04),
+        xaxis_rangeslider=dict(visible=True, thickness=0.02),
     )
     fig.update_xaxes(
         rangebreaks=_build_rangebreaks(df['trade_date']),
@@ -662,8 +895,9 @@ def render_cycle_overview():
         )
 
 
-def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线'):
+def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线', params_str=None):
     """Render a small chart for one cycle showing indicator signals."""
+    import ast
     start = pd.Timestamp(cycle['start_date'])
     end = pd.Timestamp(cycle['end_date'])
 
@@ -693,7 +927,14 @@ def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线'):
     if cfg is None:
         return
 
-    params = cfg['params'][0]
+    # Parse params from the selected row or use default
+    if params_str:
+        try:
+            params = ast.literal_eval(params_str)
+        except Exception:
+            params = cfg['params'][0]
+    else:
+        params = cfg['params'][0]
     try:
         signals = cfg['func'](compute_seg, **params)
         signals = filter_signals(compute_seg, signals)
@@ -756,19 +997,29 @@ def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线'):
             connectgaps=False,
         ), row=1, col=1)
 
+    # Compute indicator lines on full warm-up window (needed for signal markers too)
+    all_lines = get_indicator_lines(compute_seg, indicator_name, params)
+    disp_idx = disp_mask.values
+
     if sig_segment is not None and sig_segment.any():
         sig_dates = segment['trade_date'][sig_segment.values]
-        sig_closes = segment['close'][sig_segment.values]
+        # Place markers on first non-dashed indicator line (row 2)
+        marker_y = None
+        for line in all_lines:
+            if 'dash' not in line:
+                vals = line['values']
+                if isinstance(vals, np.ndarray):
+                    marker_y = vals[disp_idx][sig_segment.values]
+                break
+        if marker_y is None:
+            marker_y = segment['close'][sig_segment.values]
+
         fig.add_trace(go.Scatter(
-            x=sig_dates, y=sig_closes,
+            x=sig_dates, y=marker_y,
             mode='markers',
             marker=dict(symbol='triangle-up', size=12, color='blue'),
-            name='信号',
-        ), row=1, col=1)
-
-    # Compute indicator lines on full warm-up window, then slice to display
-    all_lines = get_indicator_lines(compute_seg, indicator_name, params)
-    disp_idx = disp_mask.values  # already relative to compute_seg
+            name='买入信号',
+        ), row=2, col=1)
 
     for line in all_lines:
         values = line['values']
@@ -810,9 +1061,12 @@ def _render_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线'):
         row=1, col=1,
     )
     fig.update_xaxes(
-        rangeslider=dict(visible=True, thickness=0.04, borderwidth=0),
+        rangeslider=dict(visible=True, thickness=0.02, borderwidth=0),
         row=2, col=1,
     )
+    # RSI/KDJ indicators: fix 0-100 range so peaks aren't clipped
+    if indicator_name in ('RSI底背离', 'RSI顶背离', 'KDJ_J值反转', 'KDJ高位死叉'):
+        fig.update_yaxes(range=[-8, 108], row=2, col=1)
 
     st.plotly_chart(fig, use_container_width=True)
 
@@ -1048,7 +1302,7 @@ def _build_rangebreaks(trade_dates):
 
 
 def render_indicator_rankings():
-    st.header("指标回测排行榜")
+    st.header("买入指标回测")
 
     if st.session_state.backtest_results is None:
         path = os.path.join(OUTPUT_DIR, 'backtest_results.csv')
@@ -1088,14 +1342,21 @@ def render_indicator_rankings():
     st.divider()
     st.subheader("指标详情 (选择指标查看各行情信号)")
 
-    indicator_names = filtered['指标名'].unique()
+    # Build display names with parameters
+    filtered['显示名'] = filtered.apply(lambda r: f"{r['指标名']} ({r['参数']})", axis=1)
+    display_names = filtered['显示名'].unique().tolist()
+    display_to_params = dict(zip(filtered['显示名'], filtered['参数']))
+    display_to_name = dict(zip(filtered['显示名'], filtered['指标名']))
+
     col_i1, col_i2 = st.columns([2, 1])
     with col_i1:
-        selected_indicator = st.selectbox('选择指标', indicator_names)
+        selected_display = st.selectbox('选择指标(参数)', display_names)
     with col_i2:
         detail_freq = st.selectbox('周期', ['日线', '周线'], key='detail_freq')
 
-    if selected_indicator:
+    if selected_display:
+        selected_indicator = display_to_name[selected_display]
+        selected_params = display_to_params[selected_display]
         if st.session_state.display_cycles is not None and st.session_state.index_daily is not None:
             cycles = st.session_state.display_cycles.to_dict('records')
             n_cycles = len(cycles)
@@ -1110,7 +1371,7 @@ def render_indicator_rankings():
                         break
                     cycle = cycles[cycle_idx]
                     with cols[col_idx]:
-                        _render_cycle_detail(cycle, cycle_idx, selected_indicator, detail_freq)
+                        _render_cycle_detail(cycle, cycle_idx, selected_indicator, detail_freq, selected_params)
 
     st.divider()
     st.subheader("指标 × 行情 热力图")
@@ -1295,7 +1556,7 @@ def _render_live_chart(stock_df, label, indicators, is_index=False):
                 hovertemplate='日期: %{x|%Y-%m-%d}<br>OBV: %{y:.0f}<extra></extra>'), row=4, col=1)
 
     fig.update_xaxes(rangebreaks=_build_rangebreaks(seg['trade_date']), tickformat='%Y-%m',
-                     rangeslider=dict(visible=True, thickness=0.03), row=4, col=1)
+                     rangeslider=dict(visible=True, thickness=0.02), row=4, col=1)
     fig.update_xaxes(rangebreaks=_build_rangebreaks(seg['trade_date']), tickformat='%Y-%m',
                      rangeslider_visible=False, row=1, col=1)
     fig.update_xaxes(rangebreaks=_build_rangebreaks(seg['trade_date']), tickformat='%Y-%m',
@@ -2006,21 +2267,493 @@ def render_lead_lag_tab():
             }), use_container_width=True, hide_index=True)
 
 
+def render_sell_rankings():
+    """Tab 7: 卖出指标回测 — mirror of render_indicator_rankings."""
+    st.header("卖出指标回测")
+
+    if st.session_state.sell_backtest_results is None:
+        path = os.path.join(OUTPUT_DIR, 'sell_backtest_results.csv')
+        if os.path.exists(path):
+            st.session_state.sell_backtest_results = pd.read_csv(path)
+        else:
+            st.info("请先在侧边栏点击「重新回测 (买入+卖出)」")
+            return
+
+    df = st.session_state.sell_backtest_results
+    if df.empty:
+        st.info("无卖出回测结果")
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        categories = ['全部'] + sorted(df['类别'].dropna().unique().tolist())
+        selected_cat = st.selectbox('指标类别', categories, key='sell_cat')
+    with col2:
+        freqs = ['全部'] + sorted(df['周期'].dropna().unique().tolist())
+        selected_freq = st.selectbox('周期', freqs, key='sell_freq')
+
+    filtered = df.copy()
+    if selected_cat != '全部':
+        filtered = filtered[filtered['类别'] == selected_cat]
+    if selected_freq != '全部':
+        filtered = filtered[filtered['周期'] == selected_freq]
+
+    st.dataframe(
+        filtered,
+        use_container_width=True,
+        column_config={
+            '综合得分': st.column_config.ProgressColumn(
+                '综合得分', format='%.3f', min_value=0, max_value=SCORE_SELL_MAX,
+            ),
+        },
+        hide_index=True,
+    )
+
+    st.divider()
+    st.subheader("指标详情 (选择指标查看各行情卖出信号)")
+
+    # Build display names with parameters
+    filtered['显示名'] = filtered.apply(lambda r: f"{r['指标名']} ({r['参数']})", axis=1)
+    display_names = filtered['显示名'].unique().tolist()
+    display_to_params = dict(zip(filtered['显示名'], filtered['参数']))
+    display_to_name = dict(zip(filtered['显示名'], filtered['指标名']))
+
+    col_i1, col_i2 = st.columns([2, 1])
+    with col_i1:
+        selected_display = st.selectbox('选择指标(参数)', display_names, key='sell_detail_ind')
+    with col_i2:
+        detail_freq = st.selectbox('周期', ['日线', '周线'], key='sell_detail_freq')
+
+    if selected_display and st.session_state.display_cycles is not None and st.session_state.index_daily is not None:
+        selected_name = display_to_name[selected_display]
+        selected_params = display_to_params[selected_display]
+        cycles = st.session_state.display_cycles.to_dict('records')
+        n_cycles = len(cycles)
+        n_cols = min(2, n_cycles)
+        n_rows = (n_cycles + n_cols - 1) // n_cols
+
+        for row_idx in range(n_rows):
+            cols = st.columns(n_cols)
+            for col_idx in range(n_cols):
+                cycle_idx = row_idx * n_cols + col_idx
+                if cycle_idx >= n_cycles:
+                    break
+                cycle = cycles[cycle_idx]
+                with cols[col_idx]:
+                    _render_sell_cycle_detail(cycle, cycle_idx, selected_name, detail_freq, selected_params)
+
+    st.divider()
+    st.subheader("指标 × 行情 热力图")
+
+    if st.session_state.cycles_df is not None and st.session_state.sell_backtest_results is not None:
+        _render_sell_heatmap(st.session_state.sell_backtest_results, st.session_state.display_cycles)
+
+
+def _render_sell_cycle_detail(cycle, cycle_idx, indicator_name, freq='日线', params_str=None):
+    """Render a small chart for one cycle showing sell indicator signals.
+    Exact mirror of _render_cycle_detail but for sell-side.
+    """
+    import ast
+    from backtest import _compute_actual_peaks
+
+    start = pd.Timestamp(cycle['start_date'])
+    end = pd.Timestamp(cycle['end_date'])
+
+    # Large window for indicator computation (enough warm-up)
+    if freq == '周线' and st.session_state.index_weekly is not None:
+        df = st.session_state.index_weekly.copy()
+        compute_start = start - pd.Timedelta(days=365 * 3)
+        display_start = start - pd.Timedelta(weeks=26)
+    else:
+        df = st.session_state.index_daily.copy()
+        compute_start = start - pd.Timedelta(days=365 * 3)
+        display_start = start - pd.Timedelta(days=60)
+
+    view_end = end + pd.Timedelta(days=30)
+
+    df['trade_date'] = pd.to_datetime(df['trade_date'])
+
+    # Compute on full warm-up window
+    comp_mask = (df['trade_date'] >= compute_start) & (df['trade_date'] <= view_end)
+    compute_seg = df[comp_mask].reset_index(drop=True)
+
+    if compute_seg.empty:
+        st.caption(f"行情{cycle_idx+1}: 无数据")
+        return
+
+    cfg = SELL_INDICATOR_REGISTRY.get(indicator_name)
+    if cfg is None:
+        return
+
+    # Parse params
+    if params_str:
+        try:
+            params = ast.literal_eval(params_str)
+        except Exception:
+            params = cfg['params'][0]
+    else:
+        params = cfg['params'][0]
+
+    # Build ref_lows from all cycles (same as backtest engine)
+    cycles_all = pd.read_csv(os.path.join(OUTPUT_DIR, 'cycles.csv'))
+    cycle_troughs = sorted([(pd.Timestamp(c['start_date']), c['start_price']) for _, c in cycles_all.iterrows()])
+    rl = []
+    close_vals = compute_seg['close'].values.astype(float)
+    for i, d in enumerate(compute_seg['trade_date']):
+        ref = None
+        for td, tp in cycle_troughs:
+            if td <= d: ref = tp
+            else: break
+        rl.append(ref if ref is not None else close_vals[i])
+
+    try:
+        signals = cfg['func'](compute_seg, **params)
+        signals = filter_sell_signals(compute_seg, signals, ref_lows=rl)
+    except Exception:
+        return
+
+    # Display only narrow window
+    disp_mask = (compute_seg['trade_date'] >= display_start) & (compute_seg['trade_date'] <= view_end)
+    segment = compute_seg[disp_mask].reset_index(drop=True)
+    sig_segment = signals[disp_mask.values].reset_index(drop=True)
+
+    if segment.empty:
+        st.caption(f"行情{cycle_idx+1}: 无数据")
+        return
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.55, 0.45],
+    )
+
+    fig.add_trace(go.Candlestick(
+        x=segment['trade_date'],
+        open=segment['open'], high=segment['high'],
+        low=segment['low'], close=segment['close'],
+        name='价格',
+        increasing_line_color='red',
+        decreasing_line_color='green',
+        showlegend=False,
+    ), row=1, col=1)
+
+    # Add rise threshold line for context (mirror of buy-side's decline line)
+    if freq == '日线':
+        full_close = compute_seg['close'].values.astype(float)
+        ma250 = talib.SMA(full_close, MA_PERIOD)
+        ma250_disp = ma250[disp_mask.values]
+        fig.add_trace(go.Scatter(
+            x=segment['trade_date'], y=ma250_disp,
+            name='年线(250)', line=dict(color='orange', width=1),
+            connectgaps=False,
+        ), row=1, col=1)
+
+        # Rise line from ref_lows (mirror of decline line)
+        rise_line = np.array(rl) * (1 + RISE_PCT / 100)
+        rise_disp = rise_line[disp_mask.values]
+        fig.add_trace(go.Scatter(
+            x=segment['trade_date'], y=rise_disp,
+            name=f'涨{RISE_PCT}%线', line=dict(color='gray', width=1, dash='dash'),
+            connectgaps=False,
+        ), row=1, col=1)
+
+    # Compute indicator lines on full warm-up window (needed for signal markers too)
+    all_lines = get_indicator_lines(compute_seg, indicator_name, params)
+    disp_idx = disp_mask.values
+
+    if sig_segment is not None and sig_segment.any():
+        sig_dates = segment['trade_date'][sig_segment.values]
+        # Place markers on first non-dashed indicator line (row 2)
+        marker_y = None
+        for line in all_lines:
+            if 'dash' not in line:
+                vals = line['values']
+                if isinstance(vals, np.ndarray):
+                    marker_y = vals[disp_idx][sig_segment.values]
+                break
+        if marker_y is None:
+            marker_y = segment['close'][sig_segment.values]
+
+        fig.add_trace(go.Scatter(
+            x=sig_dates, y=marker_y,
+            mode='markers',
+            marker=dict(symbol='triangle-down', size=12, color='red'),
+            name='卖出信号',
+        ), row=2, col=1)
+
+    for line in all_lines:
+        values = line['values']
+        if isinstance(values, np.ndarray):
+            values = values[disp_idx]
+        if line.get('type') == 'bar':
+            if line.get('colors'):
+                colors_bar = [line['colors'][i] for i in range(len(line['colors'])) if disp_idx[i]]
+            else:
+                colors_bar = ['red' if segment['close'].iloc[i] >= segment['open'].iloc[i] else 'green'
+                              for i in range(len(segment))]
+            fig.add_trace(go.Bar(
+                x=segment['trade_date'], y=values,
+                name=line['name'], marker_color=colors_bar,
+                opacity=0.7,
+            ), row=2, col=1)
+        else:
+            fig.add_trace(go.Scatter(
+                x=segment['trade_date'], y=values,
+                name=line['name'],
+                line=dict(color=line.get('color', 'blue'),
+                         dash=line.get('dash')),
+                opacity=0.7,
+            ), row=2, col=1)
+
+    # Compute actual peak for the marker (same as backtest engine)
+    peak_mask = (compute_seg['trade_date'] >= start) & (compute_seg['trade_date'] <= end)
+    cycle_seg = compute_seg[peak_mask]
+    if not cycle_seg.empty:
+        actual_peak_price = cycle_seg['close'].max()
+        actual_peak_date = cycle_seg.loc[cycle_seg['close'].idxmax(), 'trade_date']
+        # Mark cycle peak
+        fig.add_scatter(x=[actual_peak_date, actual_peak_date],
+                        y=[segment['low'].min(), segment['high'].max()],
+                        mode='lines', line=dict(dash='dot', color='red'),
+                        name='峰', showlegend=False, row=1, col=1)
+
+    # Mark cycle start (mirror of buy-side's start vline)
+    fig.add_scatter(x=[start, start],
+                    y=[segment['low'].min(), segment['high'].max()],
+                    mode='lines', line=dict(dash='dash', color='purple'),
+                    name='起点', showlegend=False, row=1, col=1)
+
+    fig.update_layout(
+        title=f"行情{cycle_idx+1}: {start.date()} → {end.date()} (+{cycle['change_pct']}%)",
+        height=420,
+        showlegend=True,
+        legend=dict(orientation='h', y=-0.08, x=0.5, xanchor='center', font=dict(size=9)),
+        margin=dict(l=10, r=10, t=40, b=40),
+    )
+    fig.update_xaxes(
+        rangebreaks=_build_rangebreaks(segment['trade_date']) if freq != '周线' else None,
+        tickformat='%Y-%m-%d',
+        rangeslider_visible=False,
+        row=1, col=1,
+    )
+    fig.update_xaxes(
+        rangeslider=dict(visible=True, thickness=0.02, borderwidth=0),
+        row=2, col=1,
+    )
+    # RSI/KDJ indicators: fix 0-100 range so peaks aren't clipped
+    if indicator_name in ('RSI底背离', 'RSI顶背离', 'KDJ_J值反转', 'KDJ高位死叉'):
+        fig.update_yaxes(range=[-8, 108], row=2, col=1)
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_sell_heatmap(results_df, cycles_df):
+    """Render sell indicator x cycle heatmap using Plotly. Mirror of _render_heatmap."""
+    import ast
+    from indicators import SELL_INDICATOR_REGISTRY, filter_sell_signals
+    from backtest import judge_sell_signal, _compute_actual_peaks
+
+    if st.session_state.index_daily is None:
+        return
+
+    cycles = cycles_df.to_dict('records')
+    heat_df = results_df.copy()
+    heat_df = heat_df.sort_values('综合得分', ascending=False)
+
+    # Prepare data
+    df = st.session_state.index_daily.copy()
+    df['trade_date'] = pd.to_datetime(df['trade_date'])
+    df = df.set_index('trade_date').sort_index()
+    cycles = _compute_actual_peaks(df, cycles)
+    close_series = df['close']
+
+    # Build ref_lows
+    cycles_all = pd.read_csv(os.path.join(OUTPUT_DIR, 'cycles.csv'))
+    cycle_troughs = sorted([(pd.Timestamp(c['start_date']), c['start_price']) for _, c in cycles_all.iterrows()])
+    ref_lows = []
+    for d in df.index:
+        rl = None
+        for td, tp in cycle_troughs:
+            if td <= d: rl = tp
+            else: break
+        ref_lows.append(rl if rl is not None else df.loc[d, 'close'])
+
+    z_data = []
+    z_text = []
+    y_labels = []
+
+    for _, row in heat_df.iterrows():
+        freq = str(row['周期'])
+        if '周' in freq and st.session_state.index_weekly is not None:
+            ws_df = st.session_state.index_weekly.copy()
+            ws_df['trade_date'] = pd.to_datetime(ws_df['trade_date'])
+            ws_df = ws_df.set_index('trade_date').sort_index()
+            # Build ref_lows for weekly (simplified)
+            w_ref_lows = []
+            for d in ws_df.index:
+                rl = None
+                for td, tp in cycle_troughs:
+                    if td <= d: rl = tp
+                    else: break
+                w_ref_lows.append(rl if rl is not None else ws_df.loc[d, 'close'])
+            s_df = ws_df
+            s_ref_lows = w_ref_lows
+        else:
+            s_df = df
+            s_ref_lows = ref_lows
+
+        cfg = SELL_INDICATOR_REGISTRY.get(row['指标名'])
+        if cfg is None:
+            for _ in cycles:
+                z_data.append([0] * len(cycles)) if False else None
+                z_text.append(['no cfg'] * len(cycles)) if False else None
+            y_labels.append(f"{row['指标名']}({row['周期']})")
+            continue
+
+        try:
+            params_str = row['参数']
+            if isinstance(params_str, str):
+                params = ast.literal_eval(params_str)
+            else:
+                params = cfg['params'][0]
+        except Exception:
+            params = cfg['params'][0]
+
+        y_labels.append(f"{row['指标名']}({row['周期']})")
+        z_row = []
+        t_row = []
+
+        try:
+            sig_raw = cfg['func'](s_df.reset_index(), **params)
+            sig_raw.index = s_df.index
+            sig = filter_sell_signals(s_df.reset_index(), sig_raw, ref_lows=s_ref_lows)
+            sig.index = s_df.index
+        except Exception:
+            for _ in cycles:
+                z_row.append(0); t_row.append('error')
+            z_data.append(z_row); z_text.append(t_row)
+            continue
+
+        for cycle in cycles:
+            peak_date = pd.Timestamp(cycle['actual_peak_date'])
+            peak_price = cycle['actual_peak_price']
+            j = judge_sell_signal(
+                sig, peak_date, peak_price, s_df['close'],
+            )
+            if j['capture_rate'] is not None:
+                cap = j['capture_rate']
+                z_row.append(cap)
+                t_row.append(f"{'命中' if j['hit'] else '错过'} 捕获率={cap:.1%} 距峰{j['days_from_peak']}天")
+            else:
+                z_row.append(0); t_row.append('错过')
+
+        z_data.append(z_row)
+        z_text.append(t_row)
+
+    if not z_data:
+        st.info("无数据可显示")
+        return
+
+    x_labels = [f"{c['start_date'][:10]}\n+{c['change_pct']}%" for c in cycles]
+
+    colorscale = [
+        [0.0, '#9e9e9e'],     # 0: miss (gray)
+        [0.50, '#ef5350'],    # low (red)
+        [0.75, '#e6a817'],    # medium (orange)
+        [0.88, '#fff176'],    # decent (yellow)
+        [0.94, '#a5d6a7'],    # good (light green)
+        [1.0, '#2e7d32'],     # perfect (dark green)
+    ]
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z_data, text=z_text,
+        x=x_labels, y=y_labels,
+        colorscale=colorscale,
+        zmin=0, zmax=1,
+        showscale=True,
+        colorbar=dict(title='捕获率', tickformat='.0%'),
+        hovertemplate='%{y}<br>%{x}<br>%{text}<extra></extra>',
+    ))
+
+    fig.update_layout(
+        height=max(300, len(y_labels) * 22 + 100),
+        margin=dict(l=10, r=10, t=20, b=60),
+        xaxis=dict(type='category', side='bottom', tickangle=0),
+        yaxis=dict(autorange='reversed'),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_combined_backtest_tab():
+    """Tab 8: 买卖联合评估."""
+    st.header("买卖联合评估")
+
+    if st.session_state.combined_results is None:
+        path = os.path.join(OUTPUT_DIR, 'cycles.csv')
+        if os.path.exists(path):
+            if st.session_state.backtest_results is not None and st.session_state.sell_backtest_results is not None:
+                if not st.session_state.backtest_results.empty and not st.session_state.sell_backtest_results.empty:
+                    cycle_df = pd.read_csv(path)
+                    combined = run_combined_backtest(
+                        cycle_df,
+                        st.session_state.backtest_results,
+                        st.session_state.sell_backtest_results,
+                        st.session_state.index_daily,
+                        st.session_state.signal_window,
+                    )
+                    st.session_state.combined_results = combined
+
+        if st.session_state.combined_results is None:
+            st.info("请先在侧边栏点击「重新回测 (买入+卖出)」")
+            return
+
+    df = st.session_state.combined_results
+    if df.empty:
+        st.info("无联合回测结果")
+        return
+
+    # Summary metrics
+    exited = df[df['评级'] != '未退出']
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        avg_cap = exited['捕获率%'].mean() if not exited.empty else 0
+        st.metric("平均捕获率", f"{avg_cap:.1f}%")
+    with col_m2:
+        exit_rate = len(exited) / len(df) * 100 if len(df) > 0 else 0
+        st.metric("退出覆盖率", f"{exit_rate:.0f}% ({len(exited)}/{len(df)})")
+    with col_m3:
+        avg_ret = exited['实际收益率%'].mean() if not exited.empty else 0
+        st.metric("平均实际收益率", f"{avg_ret:.1f}%")
+
+    st.subheader("逐轮交易明细")
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Rating distribution
+    st.subheader("评级分布")
+    rating_counts = df['评级'].value_counts()
+    st.bar_chart(rating_counts)
+
+
 def main():
     st.title("券商板块行情启动信号回测系统")
-    st.caption("基于历史行情回测，筛选有效的技术指标买入信号")
+    st.caption("基于历史行情回测，筛选有效的技术指标买入/卖出信号")
 
     render_sidebar()
 
     load_odds()
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📈 行情周期总览",
-        "🏆 指标回测排行榜",
-        "📊 个股回测对比",
+        "🏆 买入指标回测",
+        "📊 个股买入回测对比",
+        "📉 个股卖出回测对比",
         "🔍 行情跟踪",
         "💰 优选赔率",
         "⚡ 领涨/滞涨分析",
+        "📉 卖出指标回测",
+        "🔄 买卖联合评估",
     ])
 
     with tab1:
@@ -2033,13 +2766,22 @@ def main():
         render_stock_backtest()
 
     with tab4:
-        render_live_tracking()
+        render_stock_sell_backtest_tab()
 
     with tab5:
-        render_odds_tab()
+        render_live_tracking()
 
     with tab6:
+        render_odds_tab()
+
+    with tab7:
         render_lead_lag_tab()
+
+    with tab8:
+        render_sell_rankings()
+
+    with tab9:
+        render_combined_backtest_tab()
 
     st.divider()
     st.caption("⚠️ 本工具仅提供技术指标信号分析，不构成投资建议。历史回测结果不代表未来表现。")

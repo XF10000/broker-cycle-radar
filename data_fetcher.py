@@ -400,7 +400,7 @@ def fetch_index_constituents(force=False):
                 for code, name in INDEX_CONSTITUENTS.items()]
 
     try:
-        result = _try_sources('fetch_index_constituents', _ak, _ts)
+        result = _try_sources('fetch_index_constituents', _ts, _ak)
     except Exception:
         result = _hardcoded()
 
@@ -438,7 +438,7 @@ def fetch_index_daily(force=False):
             return _tushare_index_daily(start_date=start_date)
 
         try:
-            new = _try_sources('fetch_index_daily(增量)', _ak, _ts)
+            new = _try_sources('fetch_index_daily(增量)', _ts, _ak)
             return _append_and_save(existing, new, path)
         except Exception:
             return existing.sort_values('trade_date').reset_index(drop=True)
@@ -450,7 +450,7 @@ def fetch_index_daily(force=False):
         return _tushare_index_daily(start_date=DATA_START_DATE)
 
     try:
-        df = _try_sources('fetch_index_daily(全量)', _ak, _ts)
+        df = _try_sources('fetch_index_daily(全量)', _ts, _ak)
         df.to_csv(path, index=False)
         return df
     except Exception:
@@ -488,7 +488,7 @@ def fetch_stock_daily(ts_code, force=False):
             return _tushare_stock_daily(ts_code, start_date=start_date)
 
         try:
-            new = _try_sources(f'fetch_stock_daily({ts_code}, 增量)', _ak, _ts)
+            new = _try_sources(f'fetch_stock_daily({ts_code}, 增量)', _ts, _ak)
             return _append_and_save(existing, new, path)
         except Exception:
             return existing.sort_values('trade_date').reset_index(drop=True)
@@ -500,7 +500,7 @@ def fetch_stock_daily(ts_code, force=False):
         return _tushare_stock_daily(ts_code, start_date=DATA_START_DATE)
 
     try:
-        df = _try_sources(f'fetch_stock_daily({ts_code}, 全量)', _ak, _ts)
+        df = _try_sources(f'fetch_stock_daily({ts_code}, 全量)', _ts, _ak)
         df.to_csv(path, index=False)
         return df
     except Exception:
